@@ -7,6 +7,7 @@ addr: str = None
 
 BUF_SIZE = 4096
 
+
 def udpSend(message: str):
 
     sc = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -16,11 +17,20 @@ def udpSend(message: str):
     print(msg)
 
 
+def tcpSend(message: str):
+    sc = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sc.connect((addr, port))
+    sc.send(message.encode('utf-8'))
+    msg, _ = sc.recvfrom(BUF_SIZE)
+    msg = msg.decode('utf-8')
+    print(msg)
+
+
 def unknown(line: str):
     print("Unknown command `%s`." % line)
 
 
-def byebye():
+def byebye(line: str):
     exit()
 
 
@@ -28,10 +38,11 @@ def consume(line: str):
     line = line.strip()
     if len(line) == 0:
         return
-    
+
     command = line.split()[0]
     return {
         'register': udpSend,
+        'list-user': tcpSend,
         'exit': byebye
     }.get(command, unknown)(line)
 

@@ -15,13 +15,21 @@ DB_SCHEME = "nctu_np_hw1"
 BUF_SIZE = 4096
 
 
-def query(*args):
+def commit(*args):
     conn = db.connect(host=DB_HOST, user=DB_USER,
                       password=DB_PASS, database=DB_SCHEME)
     c = conn.cursor()
     res = c.execute(*args)
     conn.commit()
     return res
+
+
+def query(*args):
+    conn = db.connect(host=DB_HOST, user=DB_USER,
+                      password=DB_PASS, database=DB_SCHEME)
+    c = conn.cursor()
+    c.execute(*args)
+    return c.fetchall()
 
 
 def addUser(username, password, email):
@@ -31,14 +39,14 @@ def addUser(username, password, email):
     """
     val = (username, password, email)
     try:
-        query(sql, val)
+        commit(sql, val)
     except IntegrityError:
         return False
     return True
 
 
 def requireDatabaseInit():
-    query("""
+    commit("""
     CREATE TABLE IF NOT EXISTS users (
         username VARCHAR(255) PRIMARY KEY,
         email VARCHAR(255),
@@ -69,6 +77,18 @@ def register(tokens):
     return "Register successfully." if res else "Username is already used."
 
 
+@validateTokSize(0, ())
+def listUser(tokens):
+    res = query("""
+    SELECT username, email
+    FROM users
+    ORDER BY username
+    """)
+    res.insert(0, ("Name", "Email"))
+    rows = list(map(lambda r: "%-20s%s" % (r[0], r[1]), res))
+    return "" + '\n'.join(rows)
+
+
 def consume(message: str):
     message = message.strip()
     if len(message) == 0:
@@ -76,7 +96,8 @@ def consume(message: str):
 
     tokens = message.split()
     return {
-        'register': register
+        'register': register,
+        'list-user': listUser
     }.get(tokens[0], unknown)(tokens)
 
 
@@ -112,11 +133,13 @@ def createTcpServer(port: int):
             data = data.decode('utf-8')
             reply = consume(data)
             if reply:
-                sc.send(reply)
+                print(reply)
+                sc.send(reply.encode('utf-8'))
 
     while True:
         sc, _ = ss.accept()
         t = threading.Thread(target=socketTask, args=(sc, ))
+        t.daemon = True
         t.start()
 
 
