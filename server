@@ -197,6 +197,26 @@ class TcpPlayground:
 
 class UdpPlaygounnd:
 
+    def whoami(self, tokens):
+        if len(tokens) != 2:
+            return {
+                "status": 400,
+                "Usage": "whoami"
+            }
+
+        loginTok = int(tokens[1])
+        username = loginTokens.get(loginTok, "")
+        if len(username) == 0:
+            return {
+                "status": 400,
+                "message": "Please login first."
+            }
+        else:
+            return {
+                "status": 200,
+                "message": username
+            }
+
     @validateTokSize(("username", "email", "password"))
     def register(self, tokens):
         res = addUser(tokens[1], tokens[3], tokens[2])
@@ -216,6 +236,7 @@ class UdpPlaygounnd:
         tokens = message.split()
         return {
             'register': self.register,
+            'whoami': self.whoami
         }.get(tokens[0], unknown)(tokens)
 
     def run(self, port):

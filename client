@@ -8,7 +8,7 @@ port: int = None
 addr: str = None
 
 BUF_SIZE = 4096
-loginToken = -1
+loginTok = -1
 tcpSocket = None
 
 
@@ -43,6 +43,11 @@ def register(line: str):
     print(res["message"])
 
 
+def whoami(line: str):
+    res = udpSend("%s %d" % (line, loginTok))
+    print(res["message"])
+
+
 def listUser(line: str):
     res = tcpSend(line)
     userList: list = res["message"]
@@ -52,14 +57,14 @@ def listUser(line: str):
 
 
 def login(line: str):
-    global loginToken
+    global loginTok
 
     res = tcpSend(line)
     if res["status"] == 400:
         print(res["message"])
         return
 
-    loginToken = res["token"]
+    loginTok = res["token"]
     print(res["message"])
 
 
@@ -79,6 +84,7 @@ def consume(line: str):
         'list-user': listUser,
         'login': login,
         'logout': logout,
+        'whoami': whoami,
         'exit': byebye
     }.get(command, unknown)(line)
 
