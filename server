@@ -6,13 +6,20 @@ import threading
 import mysql.connector as db
 from time import sleep
 from mysql.connector.errors import IntegrityError
+from random import randint
+import json
 
 DB_HOST = "127.0.0.1"
 DB_USER = "nctu-np"
 DB_PASS = "123456"
 DB_SCHEME = "nctu_np_hw1"
-
 BUF_SIZE = 4096
+loginTokens = {}
+
+
+#################################################################
+#
+# Utility
 
 
 def commit(*args):
@@ -55,92 +62,204 @@ def requireDatabaseInit():
     """)
 
 
+#####################################################################
+#
+# Features
+
+
 def unknown(tokens):
     print("Unknown command: `%s`." % (tokens[0]))
 
 
-def validateTokSize(l, usage):
+##########################################################################
+#
+# Connections
+
+
+def infoNewConnection():
+    print("New Connectiion.")
+
+
+def validateTokSize(usage):
     def wrapper(f):
-        def inner(tokens):
-            if len(tokens) == l + 1:
-                return f(tokens)
+        def inner(self, tokens):
+            if len(tokens) == len(usage) + 1:
+                return f(self, tokens)
             else:
                 usageList = list(map(lambda x: "<%s>" % x, usage))
-                return "Usage: %s %s" % (tokens[0], ' '.join(usageList))
+                return {
+                    "status": 400,
+                    "message": "Usage: %s %s" % (tokens[0], ' '.join(usageList))
+                }
         return inner
     return wrapper
 
 
-@validateTokSize(3, ("username", "email", "password"))
-def register(tokens):
-    res = addUser(tokens[1], tokens[3], tokens[2])
-    return "Register successfully." if res else "Username is already used."
+class TcpPlayground:
 
+    loginToken = None
 
-@validateTokSize(0, ())
-def listUser(tokens):
-    res = query("""
-    SELECT username, email
-    FROM users
-    ORDER BY username
-    """)
-    res.insert(0, ("Name", "Email"))
-    rows = list(map(lambda r: "%-20s%s" % (r[0], r[1]), res))
-    return "" + '\n'.join(rows)
+    @validateTokSize(("username", "password"))
+    def login(self, tokens):
+        global loginTokens
 
+        if self.loginToken:
+            return {
+                "status": 400,
+                "message": "Please logout first."
+            }
 
-def consume(message: str):
-    message = message.strip()
-    if len(message) == 0:
-        return None
+        username = tokens[1]
+        password = tokens[2]
 
-    tokens = message.split()
-    return {
-        'register': register,
-        'list-user': listUser
-    }.get(tokens[0], unknown)(tokens)
+        sql = """
+        SELECT COUNT(*)
+        FROM users
+        WHERE username = %s
+            AND password = %s
+        """
+        val = (username, password)
+        res = int(query(sql, val)[0][0])
 
+        ret = None
+        if res == 0:
+            return {
+                "status": 400,
+                "message": "Login failed."
+            }
+        else:
+            self.loginToken = randint(0, 1 << 64 - 1)
+            loginTokens[self.loginToken] = username
+            ret = {
+                "status": 200,
+                "message": "Welcome, %s." % username,
+                "token": self.loginToken
+            }
 
-def createUdpServer(port: int):
-    ss = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    ss.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    ss.bind(("127.0.0.1", port))
+        return ret
 
-    while True:
-        data, addr = ss.recvfrom(BUF_SIZE)
-        if not data:
-            return
+    @validateTokSize(())
+    def listUser(self, tokens):
+        res = query("""
+        SELECT username, email
+        FROM users
+        ORDER BY username
+        """)
+        return {
+            "status": 200,
+            "message": res
+        }
 
-        data = data.decode('utf-8')
-        reply = consume(data)
-        if reply:
-            print("Say `%s`." % reply)
-            sc = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            sc.sendto(reply.encode('utf-8'), addr)
+    @validateTokSize(())
+    def logout(self, tokens):
+        if not self.loginToken:
+            return {
+                "status": 400,
+                "message": "Please login first."
+            }
+        username = loginTokens[self.loginToken]
+        del loginTokens[self.loginToken]
+        self.loginToken = None
+        return {
+            "status": 200,
+            "message": "Bye, %s." % username
+        }
 
+    def consume(self, message: str):
+        message = message.strip()
+        if len(message) == 0:
+            return None
 
-def createTcpServer(port: int):
-    ss = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    ss.bind(("127.0.0.1", port))
-    ss.listen()
+        tokens = message.split()
+        return {
+            'list-user': self.listUser,
+            'login': self.login,
+            'logout': self.logout
+        }.get(tokens[0], unknown)(tokens)
 
-    def socketTask(sc: socket.socket):
+    def run(self):
         while True:
-            data, _ = sc.recvfrom(BUF_SIZE)
+            data, _ = self.sc.recvfrom(BUF_SIZE)
             if not data:
                 return
 
             data = data.decode('utf-8')
-            reply = consume(data)
+            reply = self.consume(data)
             if reply:
-                print(reply)
-                sc.send(reply.encode('utf-8'))
+                reply = json.dumps(reply)
+                print("TCP: `%s`" % reply)
+                self.sc.send(reply.encode('utf-8'))
+
+    def __init__(self, sc):
+        infoNewConnection()
+        self.sc = sc
+
+
+class UdpPlaygounnd:
+
+    @validateTokSize(("username", "email", "password"))
+    def register(self, tokens):
+        res = addUser(tokens[1], tokens[3], tokens[2])
+        return {
+            "status": 200,
+            "message": "Register successfully."
+        } if res else {
+            "status": 400,
+            "message": "Username is already used."
+        }
+
+    def consume(self, message: str):
+        message = message.strip()
+        if len(message) == 0:
+            return None
+
+        tokens = message.split()
+        return {
+            'register': self.register,
+        }.get(tokens[0], unknown)(tokens)
+
+    def run(self, port):
+        ss = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        ss.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        ss.bind(("127.0.0.1", port))
+
+        while True:
+            data, addr = ss.recvfrom(BUF_SIZE)
+            if not data:
+                return
+
+            data = data.decode('utf-8')
+            reply = self.consume(data)
+            if reply:
+                reply = json.dumps(reply)
+                print("UDP: `%s`." % reply)
+                sc = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                sc.sendto(reply.encode('utf-8'), addr)
+
+
+def createTcpPlayground(sc: socket.socket):
+    TcpPlayground(sc).run()
+
+
+def createTcpServer(port: int):
+    ss = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    ss.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    ss.bind(("127.0.0.1", port))
+    ss.listen()
 
     while True:
         sc, _ = ss.accept()
-        t = threading.Thread(target=socketTask, args=(sc, ))
+        t = threading.Thread(target=createTcpPlayground, args=(sc, ))
         t.daemon = True
         t.start()
+
+
+def createUdpServer(port: int):
+    UdpPlaygounnd().run(port)
+
+######################################################################
+#
+# Main
 
 
 def main():

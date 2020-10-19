@@ -2,28 +2,31 @@
 
 import socket
 import sys
+import json
+
 port: int = None
 addr: str = None
 
 BUF_SIZE = 4096
+loginToken = -1
+tcpSocket = None
 
 
-def udpSend(message: str):
-
+def udpSend(message: str) -> str:
     sc = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sc.sendto(message.encode('utf-8'), (addr, port))
     msg, _ = sc.recvfrom(BUF_SIZE)
     msg = msg.decode('utf-8')
-    print(msg)
+    msg = json.loads(msg)
+    return msg
 
 
-def tcpSend(message: str):
-    sc = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sc.connect((addr, port))
-    sc.send(message.encode('utf-8'))
-    msg, _ = sc.recvfrom(BUF_SIZE)
+def tcpSend(message: str) -> str:
+    tcpSocket.send(message.encode('utf-8'))
+    msg, _ = tcpSocket.recvfrom(BUF_SIZE)
     msg = msg.decode('utf-8')
-    print(msg)
+    msg = json.loads(msg)
+    return msg
 
 
 def unknown(line: str):
@@ -31,7 +34,38 @@ def unknown(line: str):
 
 
 def byebye(line: str):
+    tcpSocket.close()
     exit()
+
+
+def register(line: str):
+    res = udpSend(line)
+    print(res["message"])
+
+
+def listUser(line: str):
+    res = tcpSend(line)
+    userList: list = res["message"]
+    userList.insert(0, ["Name", "Email"])
+    for user in userList:
+        print("%-20s%s" % (user[0], user[1]))
+
+
+def login(line: str):
+    global loginToken
+
+    res = tcpSend(line)
+    if res["status"] == 400:
+        print(res["message"])
+        return
+
+    loginToken = res["token"]
+    print(res["message"])
+
+
+def logout(line: str):
+    res = tcpSend(line)
+    print(res["message"])
 
 
 def consume(line: str):
@@ -41,14 +75,16 @@ def consume(line: str):
 
     command = line.split()[0]
     return {
-        'register': udpSend,
-        'list-user': tcpSend,
+        'register': register,
+        'list-user': listUser,
+        'login': login,
+        'logout': logout,
         'exit': byebye
     }.get(command, unknown)(line)
 
 
 def main():
-    global port, addr
+    global port, addr, tcpSocket
 
     if len(sys.argv) != 3:
         print("Usage: client <address> <port>")
@@ -56,6 +92,10 @@ def main():
 
     addr = sys.argv[1]
     port = int(sys.argv[2])
+
+    tcpSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    tcpSocket.connect((addr, port))
+
     while True:
         line = input("% ")
         consume(line)
