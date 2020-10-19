@@ -1,0 +1,54 @@
+#!/usr/bin/python3
+
+import socket
+import sys
+port: int = None
+addr: str = None
+
+BUF_SIZE = 4096
+
+def udpSend(message: str):
+
+    sc = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sc.sendto(message.encode('utf-8'), (addr, port))
+    msg, _ = sc.recvfrom(BUF_SIZE)
+    msg = msg.decode('utf-8')
+    print(msg)
+
+
+def unknown(line: str):
+    print("Unknown command `%s`." % line)
+
+
+def byebye():
+    exit()
+
+
+def consume(line: str):
+    line = line.strip()
+    if len(line) == 0:
+        return
+    
+    command = line.split()[0]
+    return {
+        'register': udpSend,
+        'exit': byebye
+    }.get(command, unknown)(line)
+
+
+def main():
+    global port, addr
+
+    if len(sys.argv) != 3:
+        print("Usage: client <address> <port>")
+        exit(-1)
+
+    addr = sys.argv[1]
+    port = int(sys.argv[2])
+    while True:
+        line = input("% ")
+        consume(line)
+
+
+if __name__ == "__main__":
+    main()

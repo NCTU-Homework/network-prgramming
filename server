@@ -1,0 +1,144 @@
+#!/usr/bin/python3
+
+import socket
+import sys
+import threading
+import mysql.connector as db
+from time import sleep
+from mysql.connector.errors import IntegrityError
+
+DB_HOST = "127.0.0.1"
+DB_USER = "nctu-np"
+DB_PASS = "123456"
+DB_SCHEME = "nctu_np_hw1"
+
+BUF_SIZE = 4096
+
+
+def query(*args):
+    conn = db.connect(host=DB_HOST, user=DB_USER,
+                      password=DB_PASS, database=DB_SCHEME)
+    c = conn.cursor()
+    res = c.execute(*args)
+    conn.commit()
+    return res
+
+
+def addUser(username, password, email):
+    sql = """
+    INSERT INTO users ( username, password, email )
+    VALUES ( %s, %s, %s )
+    """
+    val = (username, password, email)
+    try:
+        query(sql, val)
+    except IntegrityError:
+        return False
+    return True
+
+
+def requireDatabaseInit():
+    query("""
+    CREATE TABLE IF NOT EXISTS users (
+        username VARCHAR(255) PRIMARY KEY,
+        email VARCHAR(255),
+        password VARCHAR(255)
+    )
+    """)
+
+
+def unknown(tokens):
+    print("Unknown command: `%s`." % (tokens[0]))
+
+
+def validateTokSize(l, usage):
+    def wrapper(f):
+        def inner(tokens):
+            if len(tokens) == l + 1:
+                return f(tokens)
+            else:
+                usageList = list(map(lambda x: "<%s>" % x, usage))
+                return "Usage: %s %s" % (tokens[0], ' '.join(usageList))
+        return inner
+    return wrapper
+
+
+@validateTokSize(3, ("username", "email", "password"))
+def register(tokens):
+    res = addUser(tokens[1], tokens[3], tokens[2])
+    return "Register successfully." if res else "Username is already used."
+
+
+def consume(message: str):
+    message = message.strip()
+    if len(message) == 0:
+        return None
+
+    tokens = message.split()
+    return {
+        'register': register
+    }.get(tokens[0], unknown)(tokens)
+
+
+def createUdpServer(port: int):
+    ss = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    ss.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    ss.bind(("127.0.0.1", port))
+
+    while True:
+        data, addr = ss.recvfrom(BUF_SIZE)
+        if not data:
+            return
+
+        data = data.decode('utf-8')
+        reply = consume(data)
+        if reply:
+            print("Say `%s`." % reply)
+            sc = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sc.sendto(reply.encode('utf-8'), addr)
+
+
+def createTcpServer(port: int):
+    ss = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    ss.bind(("127.0.0.1", port))
+    ss.listen()
+
+    def socketTask(sc: socket.socket):
+        while True:
+            data, _ = sc.recvfrom(BUF_SIZE)
+            if not data:
+                return
+
+            data = data.decode('utf-8')
+            reply = consume(data)
+            if reply:
+                sc.send(reply)
+
+    while True:
+        sc, _ = ss.accept()
+        t = threading.Thread(target=socketTask, args=(sc, ))
+        t.start()
+
+
+def main():
+    if len(sys.argv) != 2:
+        print("Usage: ./server <port>")
+        exit(1)
+
+    port = int(sys.argv[1])
+
+    requireDatabaseInit()
+
+    t1 = threading.Thread(target=createUdpServer, args=(port, ))
+    t2 = threading.Thread(target=createTcpServer, args=(port, ))
+    t1.daemon = True
+    t2.daemon = True
+    t1.start()
+    t2.start()
+
+    while True:
+        sleep(1000)
+
+
+if __name__ == "__main__":
+    main()
