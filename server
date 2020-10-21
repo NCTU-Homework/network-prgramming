@@ -68,6 +68,7 @@ def requireDatabaseInit():
 
 
 def unknown(tokens):
+    # should not happen
     print("Unknown command: `%s`." % (tokens[0]))
 
 
@@ -187,7 +188,7 @@ class TcpPlayground:
             reply = self.consume(data)
             if reply:
                 reply = json.dumps(reply)
-                print("TCP: `%s`" % reply)
+                # print("TCP: `%s`" % reply)
                 self.sc.send(reply.encode('utf-8'))
 
     def __init__(self, sc):
@@ -201,7 +202,7 @@ class UdpPlaygounnd:
         if len(tokens) != 2:
             return {
                 "status": 400,
-                "Usage": "whoami"
+                "message": "Usage: whoami"
             }
 
         loginTok = int(tokens[1])
@@ -253,7 +254,7 @@ class UdpPlaygounnd:
             reply = self.consume(data)
             if reply:
                 reply = json.dumps(reply)
-                print("UDP: `%s`." % reply)
+                # print("UDP: `%s`." % reply)
                 sc = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                 sc.sendto(reply.encode('utf-8'), addr)
 
