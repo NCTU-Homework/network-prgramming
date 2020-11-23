@@ -4,112 +4,185 @@ import socket
 import sys
 import threading
 import json
+from datetime import date
 
 BUF_SIZE = 4096
+postId = 0
 
 
-def validateTokSize(usage):
+def nextPostId():
+    global postId
+    postId = postId + 1
+    return postId
+
+
+def ok(msg: str):
+    return {"status": 200, "message": msg}
+
+
+def bad(msg: str):
+    return {"status": 400, "message": msg}
+
+
+def validateTokens(usage):
     def wrapper(f):
         def inner(self, tokens):
             if len(tokens) == len(usage) + 1:
                 return f(self, tokens)
             else:
                 usageList = list(map(lambda x: "<%s>" % x, usage))
-                return {
-                    "status": 400,
-                    "message": "Usage: %s %s" % (tokens[0], ' '.join(usageList))
-                }
+                return bad("Usage: %s %s" % (tokens[0], ' '.join(usageList)))
         return inner
     return wrapper
 
 
 users = {}
+boards = {}
+posts = {}
+PLEASE_LOGIN_FIRST = bad("Please login first.")
 
 
 class Client:
 
     username = None
 
-    @validateTokSize(("username", "password"))
+    @validateTokens(("boardname", ))
+    def createBoard(self, tokens):
+        if not self.username:
+            return PLEASE_LOGIN_FIRST
+
+        b = tokens[1]
+        if b in boards:
+            return bad("Board already exists.")
+
+        boards[b] = {
+            "moderator": self.username,
+            "posts": set()
+        }
+        return ok("Create board successfully.")
+
+    def createPost(self, tokens):
+        try:
+            titleIndex = tokens.index("--title")
+            contentIndex = tokens.index("--content")
+            if titleIndex <= 1 or contentIndex <= 1:
+                raise ValueError("invalid index")
+        except ValueError:
+             return bad("Usage: create-post <board-name> --title <title> --content <content>")
+
+        if not self.username:
+            return PLEASE_LOGIN_FIRST
+
+        b = tokens[1]
+        if b not in boards:
+            return bad("Board does not exist.")
+
+        postTitle = None
+        postContent = None
+        if titleIndex < contentIndex:
+            postTitle = " ".join(tokens[titleIndex+1:contentIndex])
+            postContent = " ".join(tokens[contentIndex+1:])
+        else:
+            postTitle = " ".join(tokens[titleIndex+1:])
+            postContent = " ".join(tokens[contentIndex+1:titleIndex])
+        postContent.replace("<br>", "\n")
+
+        id = nextPostId()
+        boards[b]["posts"].add(id)
+        posts[id] = {
+            "content": postContent,
+            "title": postTitle,
+            "comments": [],
+            "date": date.today(),
+            "author": self.username
+        }
+        return ok("Create post successfully.")
+
+    @validateTokens(())
+    def listBoard(self, tokens):
+        ret = "Index\tName\tModerator"
+        index = 0
+        for b in boards:
+            index = index + 1
+            ret += "\n%d\t%s\t%s" % (index, b, boards[b]["moderator"])
+        return ok(ret)
+
+    @validateTokens(("board-name", ))
+    def listPost(self, tokens):
+        b = tokens[1]
+
+        if b not in boards:
+            return bad("Board does not exist.")
+
+        ret = "S/N\tTitle\tAuthor\tDate"
+        for pid in boards[b]["posts"]:
+            post = posts[pid]
+            ret += "\n%d\t%s\t%s\t%s" % (pid, post["title"],
+                                         post["author"], post["date"].strftime('%m/%d'))
+        return ok(ret)
+
+    @validateTokens(("post-S/N", ))
+    def read(self, tokens):
+        id = None
+        try:
+            id = int(tokens[1])
+        except ValueError:
+            return bad("Post does not exist.")
+
+        if id not in posts:
+            return bad("Post does not exist.")
+
+        post = posts[id]
+        ret = "Author: %s\nTitle: %s\nDate: %s\n--\n%s\n--" % (
+            post["author"], post["title"], post["date"].strftime("%m/%d"), post["content"])
+        for c in posts[id]["comments"]:
+            ret += "\n%s: %s" % (c["author"], c["content"])
+        return ok(ret)
+
+    @validateTokens(("username", "password"))
     def login(self, tokens):
-        global users
 
         if self.username:
-            return {
-                "status": 400,
-                "message": "Please logout first."
-            }
+            return PLEASE_LOGIN_FIRST
 
         u, p = tokens[1:]
         if u not in users or users[u]["passwd"] != p:
-            return {
-                "status": 400,
-                "message": "Login failed."
-            }
+            return bad("Login failed.")
 
         self.username = u
-        return {
-            "status": 200,
-            "message": "Welcome, %s." % u,
-        }
+        return ok("Welcome, %s." % u)
 
-    @validateTokSize(())
+    @validateTokens(())
     def listUser(self, tokens):
-        global users
-
         res = "Name\tEmail\n"
         for u in users:
             res += "%s\t%s\n" % (u, users[u].email)
 
-        return {
-            "status": 200,
-            "message": res
-        }
+        return ok(res)
 
-    @validateTokSize(())
+    @validateTokens(())
     def logout(self, tokens):
         if not self.username:
-            return {
-                "status": 400,
-                "message": "Please login first."
-            }
+            return PLEASE_LOGIN_FIRST
 
         u = self.username
         self.username = None
-        return {
-            "status": 200,
-            "message": "Bye, %s." % u
-        }
+        return ok("Bye, %s." % u)
 
-    @validateTokSize(())
+    @validateTokens(())
     def whoami(self, tokens):
         if not self.username:
-            return {
-                "status": 400,
-                "message": "Please login first."
-            }
+            return PLEASE_LOGIN_FIRST
+        return ok(self.username)
 
-        return {
-            "status": 200,
-            "message": self.username
-        }
-
-    @validateTokSize(("username", "email", "password"))
+    @validateTokens(("username", "email", "password"))
     def register(self, tokens):
-        global users
-
         u, e, p = tokens[1:]
         if u in users:
-            return {
-                "status": 400,
-                "message": "Username is already used."
-            }
+            return bad("Username is already used.")
 
         users[u] = {"email": e, "passwd": p}
-        return {
-            "status": 200,
-            "message": "Register successfully."
-        }
+        return ok("Register successfully.")
 
     def consume(self, message: str):
         message = message.strip()
@@ -123,15 +196,17 @@ class Client:
             'logout': self.logout,
             'whoami': self.whoami,
             'register': self.register,
-            'consume': self.consume
+            'consume': self.consume,
+            'create-board': self.createBoard,
+            'create-post': self.createPost,
+            'list-board': self.listBoard,
+            'list-post': self.listPost,
+            'read': self.read
         }.get(tokens[0], self.unknown)(tokens)
 
     def unknown(self, tokens):
         # should not happen
-        return {
-            "status": 400, 
-            "message": "Unknown command: `%s`." % (tokens[0])
-        }
+        return bad("Unknown command: `%s`." % (tokens[0]))
 
     def run(self):
         while True:

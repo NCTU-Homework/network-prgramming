@@ -5,6 +5,8 @@ import sys
 import json
 
 BUF_SIZE = 4096
+
+
 class Client:
 
     sc = None
@@ -63,6 +65,7 @@ def main():
 
     client = Client(tcpSocket)
     client.run()
+
 
 if __name__ == "__main__":
     main()
