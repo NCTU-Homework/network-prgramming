@@ -4,93 +4,47 @@ import socket
 import sys
 import json
 
-port: int = None
-addr: str = None
-
 BUF_SIZE = 4096
-loginTok = -1
-tcpSocket = None
+class Client:
 
+    sc = None
 
-def udpSend(message: str) -> str:
-    sc = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sc.sendto(message.encode('utf-8'), (addr, port))
-    msg, _ = sc.recvfrom(BUF_SIZE)
-    msg = msg.decode('utf-8')
-    msg = json.loads(msg)
-    return msg
-
-
-def tcpSend(message: str) -> str:
-    tcpSocket.send(message.encode('utf-8'))
-    msg, _ = tcpSocket.recvfrom(BUF_SIZE)
-    msg = msg.decode('utf-8')
-    msg = json.loads(msg)
-    return msg
-
-
-def unknown(line: str):
-    print("Unknown command `%s`." % line)
-
-
-def byebye(line: str):
-    tcpSocket.close()
-    exit()
-
-
-def register(line: str):
-    res = udpSend(line)
-    print(res["message"])
-
-
-def whoami(line: str):
-    res = udpSend("%s %d" % (line, loginTok))
-    print(res["message"])
-
-
-def listUser(line: str):
-    res = tcpSend(line)
-    userList: list = res["message"]
-    userList.insert(0, ["Name", "Email"])
-    for user in userList:
-        print("%-20s%s" % (user[0], user[1]))
-
-
-def login(line: str):
-    global loginTok
-
-    res = tcpSend(line)
-    if res["status"] == 400:
+    def trivial(self, line: str):
+        res = self.send(line)
         print(res["message"])
-        return
 
-    loginTok = res["token"]
-    print(res["message"])
+    def exit(self):
+        self.sc.close()
+        exit()
 
+    def consume(self, line: str):
+        line = line.strip()
+        if len(line) == 0:
+            return
 
-def logout(line: str):
-    res = tcpSend(line)
-    print(res["message"])
+        command = line.split()[0]
+        if command == 'exit':
+            self.exit()
+        else:
+            self.trivial(line)
 
+    def send(self, message: str):
+        self.sc.send(message.encode('utf-8'))
+        msg, _ = self.sc.recvfrom(BUF_SIZE)
+        msg = msg.decode('utf-8')
+        msg = json.loads(msg)
+        return msg
 
-def consume(line: str):
-    line = line.strip()
-    if len(line) == 0:
-        return
+    def run(self):
+        while True:
+            line = input("% ")
+            self.consume(line)
 
-    command = line.split()[0]
-    return {
-        'register': register,
-        'list-user': listUser,
-        'login': login,
-        'logout': logout,
-        'whoami': whoami,
-        'exit': byebye
-    }.get(command, unknown)(line)
+    def __init__(self, sc: socket.socket):
+        self.sc = sc
 
 
 def main():
-    global port, addr, tcpSocket
 
     if len(sys.argv) != 3:
         print("Usage: client <address> <port>")
@@ -102,10 +56,13 @@ def main():
     tcpSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     tcpSocket.connect((addr, port))
 
-    while True:
-        line = input("% ")
-        consume(line)
+    welcome = """********************************
+** Welcome to the BBS server. **
+********************************"""
+    print(welcome)
 
+    client = Client(tcpSocket)
+    client.run()
 
 if __name__ == "__main__":
     main()

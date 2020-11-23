@@ -3,82 +3,9 @@
 import socket
 import sys
 import threading
-import mysql.connector as db
-from time import sleep
-from mysql.connector.errors import IntegrityError
-from random import randint
 import json
 
-DB_HOST = "127.0.0.1"
-DB_USER = "nctu-np"
-DB_PASS = "123456"
-DB_SCHEME = "nctu_np_hw1"
 BUF_SIZE = 4096
-loginTokens = {}
-
-
-#################################################################
-#
-# Utility
-
-
-def commit(*args):
-    conn = db.connect(host=DB_HOST, user=DB_USER,
-                      password=DB_PASS, database=DB_SCHEME)
-    c = conn.cursor()
-    res = c.execute(*args)
-    conn.commit()
-    return res
-
-
-def query(*args):
-    conn = db.connect(host=DB_HOST, user=DB_USER,
-                      password=DB_PASS, database=DB_SCHEME)
-    c = conn.cursor()
-    c.execute(*args)
-    return c.fetchall()
-
-
-def addUser(username, password, email):
-    sql = """
-    INSERT INTO users ( username, password, email )
-    VALUES ( %s, %s, %s )
-    """
-    val = (username, password, email)
-    try:
-        commit(sql, val)
-    except IntegrityError:
-        return False
-    return True
-
-
-def requireDatabaseInit():
-    commit("""
-    CREATE TABLE IF NOT EXISTS users (
-        username VARCHAR(255) PRIMARY KEY,
-        email VARCHAR(255),
-        password VARCHAR(255)
-    )
-    """)
-
-
-#####################################################################
-#
-# Features
-
-
-def unknown(tokens):
-    # should not happen
-    print("Unknown command: `%s`." % (tokens[0]))
-
-
-##########################################################################
-#
-# Connections
-
-
-def infoNewConnection():
-    print("New Connection.")
 
 
 def validateTokSize(usage):
@@ -96,56 +23,44 @@ def validateTokSize(usage):
     return wrapper
 
 
-class TcpPlayground:
+users = {}
 
-    loginToken = None
+
+class Client:
+
+    username = None
 
     @validateTokSize(("username", "password"))
     def login(self, tokens):
-        global loginTokens
+        global users
 
-        if self.loginToken:
+        if self.username:
             return {
                 "status": 400,
                 "message": "Please logout first."
             }
 
-        username = tokens[1]
-        password = tokens[2]
-
-        sql = """
-        SELECT COUNT(*)
-        FROM users
-        WHERE username = %s
-            AND password = %s
-        """
-        val = (username, password)
-        res = int(query(sql, val)[0][0])
-
-        ret = None
-        if res == 0:
+        u, p = tokens[1:]
+        if u not in users or users[u]["passwd"] != p:
             return {
                 "status": 400,
                 "message": "Login failed."
             }
-        else:
-            self.loginToken = randint(0, 1 << 64 - 1)
-            loginTokens[self.loginToken] = username
-            ret = {
-                "status": 200,
-                "message": "Welcome, %s." % username,
-                "token": self.loginToken
-            }
 
-        return ret
+        self.username = u
+        return {
+            "status": 200,
+            "message": "Welcome, %s." % u,
+        }
 
     @validateTokSize(())
     def listUser(self, tokens):
-        res = query("""
-        SELECT username, email
-        FROM users
-        ORDER BY username
-        """)
+        global users
+
+        res = "Name\tEmail\n"
+        for u in users:
+            res += "%s\t%s\n" % (u, users[u].email)
+
         return {
             "status": 200,
             "message": res
@@ -153,17 +68,47 @@ class TcpPlayground:
 
     @validateTokSize(())
     def logout(self, tokens):
-        if not self.loginToken:
+        if not self.username:
             return {
                 "status": 400,
                 "message": "Please login first."
             }
-        username = loginTokens[self.loginToken]
-        del loginTokens[self.loginToken]
-        self.loginToken = None
+
+        u = self.username
+        self.username = None
         return {
             "status": 200,
-            "message": "Bye, %s." % username
+            "message": "Bye, %s." % u
+        }
+
+    @validateTokSize(())
+    def whoami(self, tokens):
+        if not self.username:
+            return {
+                "status": 400,
+                "message": "Please login first."
+            }
+
+        return {
+            "status": 200,
+            "message": self.username
+        }
+
+    @validateTokSize(("username", "email", "password"))
+    def register(self, tokens):
+        global users
+
+        u, e, p = tokens[1:]
+        if u in users:
+            return {
+                "status": 400,
+                "message": "Username is already used."
+            }
+
+        users[u] = {"email": e, "passwd": p}
+        return {
+            "status": 200,
+            "message": "Register successfully."
         }
 
     def consume(self, message: str):
@@ -175,8 +120,18 @@ class TcpPlayground:
         return {
             'list-user': self.listUser,
             'login': self.login,
-            'logout': self.logout
-        }.get(tokens[0], unknown)(tokens)
+            'logout': self.logout,
+            'whoami': self.whoami,
+            'register': self.register,
+            'consume': self.consume
+        }.get(tokens[0], self.unknown)(tokens)
+
+    def unknown(self, tokens):
+        # should not happen
+        return {
+            "status": 400, 
+            "message": "Unknown command: `%s`." % (tokens[0])
+        }
 
     def run(self):
         while True:
@@ -188,82 +143,16 @@ class TcpPlayground:
             reply = self.consume(data)
             if reply:
                 reply = json.dumps(reply)
-                # print("TCP: `%s`" % reply)
+                print("TCP: `%s`" % reply)
                 self.sc.send(reply.encode('utf-8'))
 
-    def __init__(self, sc):
-        infoNewConnection()
+    def __init__(self, sc: socket.socket):
+        print("New Connection.")
         self.sc = sc
 
 
-class UdpPlaygounnd:
+def runTcpServer(port: int):
 
-    def whoami(self, tokens):
-        if len(tokens) != 2:
-            return {
-                "status": 400,
-                "message": "Usage: whoami"
-            }
-
-        loginTok = int(tokens[1])
-        username = loginTokens.get(loginTok, "")
-        if len(username) == 0:
-            return {
-                "status": 400,
-                "message": "Please login first."
-            }
-        else:
-            return {
-                "status": 200,
-                "message": username
-            }
-
-    @validateTokSize(("username", "email", "password"))
-    def register(self, tokens):
-        res = addUser(tokens[1], tokens[3], tokens[2])
-        return {
-            "status": 200,
-            "message": "Register successfully."
-        } if res else {
-            "status": 400,
-            "message": "Username is already used."
-        }
-
-    def consume(self, message: str):
-        message = message.strip()
-        if len(message) == 0:
-            return None
-
-        tokens = message.split()
-        return {
-            'register': self.register,
-            'whoami': self.whoami
-        }.get(tokens[0], unknown)(tokens)
-
-    def run(self, port):
-        ss = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        ss.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        ss.bind(("127.0.0.1", port))
-
-        while True:
-            data, addr = ss.recvfrom(BUF_SIZE)
-            if not data:
-                return
-
-            data = data.decode('utf-8')
-            reply = self.consume(data)
-            if reply:
-                reply = json.dumps(reply)
-                # print("UDP: `%s`." % reply)
-                sc = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                sc.sendto(reply.encode('utf-8'), addr)
-
-
-def createTcpPlayground(sc: socket.socket):
-    TcpPlayground(sc).run()
-
-
-def createTcpServer(port: int):
     ss = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     ss.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     ss.bind(("127.0.0.1", port))
@@ -271,17 +160,13 @@ def createTcpServer(port: int):
 
     while True:
         sc, _ = ss.accept()
-        t = threading.Thread(target=createTcpPlayground, args=(sc, ))
+
+        def createTcpPlayground():
+            Client(sc).run()
+
+        t = threading.Thread(target=createTcpPlayground)
         t.daemon = True
         t.start()
-
-
-def createUdpServer(port: int):
-    UdpPlaygounnd().run(port)
-
-######################################################################
-#
-# Main
 
 
 def main():
@@ -290,18 +175,7 @@ def main():
         exit(1)
 
     port = int(sys.argv[1])
-
-    requireDatabaseInit()
-
-    t1 = threading.Thread(target=createUdpServer, args=(port, ))
-    t2 = threading.Thread(target=createTcpServer, args=(port, ))
-    t1.daemon = True
-    t2.daemon = True
-    t1.start()
-    t2.start()
-
-    while True:
-        sleep(1000)
+    runTcpServer(port)
 
 
 if __name__ == "__main__":
