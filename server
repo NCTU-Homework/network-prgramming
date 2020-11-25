@@ -40,6 +40,7 @@ users = {}
 boards = {}
 posts = {}
 PLEASE_LOGIN_FIRST = bad("Please login first.")
+POST_NOT_EXISTS = bad("Post does not exist.")
 
 
 class Client:
@@ -68,7 +69,7 @@ class Client:
             if titleIndex <= 1 or contentIndex <= 1:
                 raise ValueError("invalid index")
         except ValueError:
-             return bad("Usage: create-post <board-name> --title <title> --content <content>")
+            return bad("Usage: create-post <board-name> --title <title> --content <content>")
 
         if not self.username:
             return PLEASE_LOGIN_FIRST
@@ -94,7 +95,8 @@ class Client:
             "title": postTitle,
             "comments": [],
             "date": date.today(),
-            "author": self.username
+            "author": self.username,
+            "board": b
         }
         return ok("Create post successfully.")
 
@@ -184,6 +186,85 @@ class Client:
         users[u] = {"email": e, "passwd": p}
         return ok("Register successfully.")
 
+    @validateTokens("post-S/N")
+    def deletePost(self, tokens):
+        if not self.username:
+            return PLEASE_LOGIN_FIRST
+
+        try:
+            id = int(tokens[1])
+            if id not in posts:
+                return POST_NOT_EXISTS
+        except ValueError:
+            return POST_NOT_EXISTS
+
+        owner = posts[id]["owner"]
+        if self.username != owner:
+            return bad("Not the post owner.")
+
+        b = posts[id]["board"]
+        boards[b]["posts"].remove(id)
+        del posts[id]
+        return ok("Delete successfully.")
+
+    def updatePost(self, tokens):
+        if "--title" in tokens and "--content" in tokens:
+            titleIndex = tokens.index("--title")
+            contentIndex = tokens.index("--content")
+            if titleIndex < contentIndex:
+                postTitle = " ".join(tokens[titleIndex + 1: contentIndex])
+                postContent = " ".join(tokens[contentIndex + 1])
+            else:
+                postTitle = " ".join(tokens[titleIndex + 1])
+                postContent = " ".join(tokens[contentIndex + 1: titleIndex])
+        elif "--title" in tokens:
+            titleIndex = tokens.index("--title")
+            postTitle = " ".join(tokens[titleIndex + 1: contentIndex])
+        elif "--content" in tokens:
+            contentIndex = tokens.index("--content")
+            postContent = " ".join(tokens[contentIndex + 1])
+        else:
+            return bad("Usage: update-post <post-S/N> --title/content <new>")
+        
+        if not self.username:
+            return PLEASE_LOGIN_FIRST
+
+        try:
+            id = int(tokens[1])
+            if id not in posts:
+                return POST_NOT_EXISTS
+        except:
+            return POST_NOT_EXISTS
+
+        if posts[id]["author"] != self.username:
+            return bad("Not the post owner.")
+        
+        if postTitle:
+            posts[id]["title"] = postTitle
+        if postContent:
+            postContent = postContent.replace("<br>", "\n")
+            posts[id]["content"] = postContent
+        return ok("Update successfully.")
+
+    def comment(self, tokens):
+        if len(tokens) < 3:
+            return bad("Usage: comment <post-S/N> <comment>")
+
+        if not self.username:
+            return PLEASE_LOGIN_FIRST
+        
+        try:
+            id = int(tokens[1])
+            if id not in posts:
+                return POST_NOT_EXISTS
+        except:
+            return POST_NOT_EXISTS
+        
+        posts[id]["comments"].append({
+            "author": self.username,
+            "content": " ".join(tokens[2:])
+        })
+
     def consume(self, message: str):
         message = message.strip()
         if len(message) == 0:
@@ -201,6 +282,9 @@ class Client:
             'create-post': self.createPost,
             'list-board': self.listBoard,
             'list-post': self.listPost,
+            'update-post': self.updatePost,
+            'comment': self.comment,
+            'delete-post': self.deletePost,
             'read': self.read
         }.get(tokens[0], self.unknown)(tokens)
 
