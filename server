@@ -63,13 +63,16 @@ class Client:
         return ok("Create board successfully.")
 
     def createPost(self, tokens):
+        usage =  bad("Usage: create-post <board-name> --title <title> --content <content>")
+        if len(tokens) < 3:
+            return usage
         try:
             titleIndex = tokens.index("--title")
             contentIndex = tokens.index("--content")
             if titleIndex <= 1 or contentIndex <= 1:
-                raise ValueError("invalid index")
+                return usage
         except ValueError:
-            return bad("Usage: create-post <board-name> --title <title> --content <content>")
+            return usage
 
         if not self.username:
             return PLEASE_LOGIN_FIRST
@@ -86,7 +89,7 @@ class Client:
         else:
             postTitle = " ".join(tokens[titleIndex+1:])
             postContent = " ".join(tokens[contentIndex+1:titleIndex])
-        postContent.replace("<br>", "\n")
+        postContent = postContent.replace("<br>", "\n")
 
         id = nextPostId()
         boards[b]["posts"].add(id)
@@ -125,14 +128,12 @@ class Client:
 
     @validateTokens(("post-S/N", ))
     def read(self, tokens):
-        id = None
         try:
             id = int(tokens[1])
+            if id not in posts:
+                return POST_NOT_EXISTS
         except ValueError:
-            return bad("Post does not exist.")
-
-        if id not in posts:
-            return bad("Post does not exist.")
+            return POST_NOT_EXISTS
 
         post = posts[id]
         ret = "Author: %s\nTitle: %s\nDate: %s\n--\n%s\n--" % (
@@ -143,9 +144,8 @@ class Client:
 
     @validateTokens(("username", "password"))
     def login(self, tokens):
-
         if self.username:
-            return PLEASE_LOGIN_FIRST
+            return bad("Please logout first.")
 
         u, p = tokens[1:]
         if u not in users or users[u]["passwd"] != p:
@@ -186,7 +186,7 @@ class Client:
         users[u] = {"email": e, "passwd": p}
         return ok("Register successfully.")
 
-    @validateTokens("post-S/N")
+    @validateTokens(("post-S/N", ))
     def deletePost(self, tokens):
         if not self.username:
             return PLEASE_LOGIN_FIRST
@@ -198,7 +198,7 @@ class Client:
         except ValueError:
             return POST_NOT_EXISTS
 
-        owner = posts[id]["owner"]
+        owner = posts[id]["author"]
         if self.username != owner:
             return bad("Not the post owner.")
 
@@ -208,6 +208,8 @@ class Client:
         return ok("Delete successfully.")
 
     def updatePost(self, tokens):
+        postTitle = None
+        postContent = None
         if "--title" in tokens and "--content" in tokens:
             titleIndex = tokens.index("--title")
             contentIndex = tokens.index("--content")
@@ -219,13 +221,13 @@ class Client:
                 postContent = " ".join(tokens[contentIndex + 1: titleIndex])
         elif "--title" in tokens:
             titleIndex = tokens.index("--title")
-            postTitle = " ".join(tokens[titleIndex + 1: contentIndex])
+            postTitle = " ".join(tokens[titleIndex + 1:])
         elif "--content" in tokens:
             contentIndex = tokens.index("--content")
-            postContent = " ".join(tokens[contentIndex + 1])
+            postContent = " ".join(tokens[contentIndex + 1:])
         else:
             return bad("Usage: update-post <post-S/N> --title/content <new>")
-        
+
         if not self.username:
             return PLEASE_LOGIN_FIRST
 
@@ -238,7 +240,7 @@ class Client:
 
         if posts[id]["author"] != self.username:
             return bad("Not the post owner.")
-        
+
         if postTitle:
             posts[id]["title"] = postTitle
         if postContent:
@@ -252,18 +254,19 @@ class Client:
 
         if not self.username:
             return PLEASE_LOGIN_FIRST
-        
+
         try:
             id = int(tokens[1])
             if id not in posts:
                 return POST_NOT_EXISTS
         except:
             return POST_NOT_EXISTS
-        
+
         posts[id]["comments"].append({
             "author": self.username,
             "content": " ".join(tokens[2:])
         })
+        return ok("Comment successfully.")
 
     def consume(self, message: str):
         message = message.strip()
@@ -302,7 +305,7 @@ class Client:
             reply = self.consume(data)
             if reply:
                 reply = json.dumps(reply)
-                print("TCP: `%s`" % reply)
+                #print("TCP: `%s`" % reply)
                 self.sc.send(reply.encode('utf-8'))
 
     def __init__(self, sc: socket.socket):
