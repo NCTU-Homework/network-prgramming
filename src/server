@@ -94,7 +94,8 @@ class Client:
         chatroomList[self.username] = { 'port': port }
         return {
             'status': 200,
-            'port': port
+            'port': port,
+            'username': self.username
         }
 
     @validateTokens(('boardname', ))
