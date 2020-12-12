@@ -5,268 +5,291 @@ import sys
 import threading
 import json
 from datetime import date
+from typing import Tuple, List
+
+
+class BadCommandError(Exception):
+    def __init__(self, message: str):
+        self.reason = message
+
 
 BUF_SIZE = 4096
 postId = 0
+postIdLock = threading.Lock()
 
 
 def nextPostId():
     global postId
+    postIdLock.acquire()
     postId = postId + 1
+    ret = postId
+    postIdLock.release()
     return postId
 
 
 def ok(msg: str):
-    return {"status": 200, "message": msg}
+    return {'status': 200, 'message': msg}
 
 
 def bad(msg: str):
-    return {"status": 400, "message": msg}
+    return {'status': 400, 'message': msg}
 
 
-def validateTokens(usage):
+def isInt(x: str):
+    try:
+        int(x)
+        return True
+    except ValueError:
+        return False
+
+
+POST_NOT_EXISTS = 'Post does not exist.'
+
+
+def validateTokens(usage: Tuple[str], reqInt: Tuple[int] = ()):
     def wrapper(f):
         def inner(self, tokens):
-            if len(tokens) == len(usage) + 1:
-                return f(self, tokens)
-            else:
-                usageList = list(map(lambda x: "<%s>" % x, usage))
-                return bad("Usage: %s %s" % (tokens[0], ' '.join(usageList)))
+            usageList = list(map(lambda x: '<%s>' % x, usage))
+            error = BadCommandError('Usage: %s %s' %
+                                    (tokens[0], ' '.join(usageList)))
+            if len(tokens) != len(usage) + 1:
+                raise error
+            for index in reqInt:
+                if not isInt(tokens[index]):
+                    raise error
+            return f(self, tokens)
+
         return inner
     return wrapper
 
 
-users = {}
-boards = {}
-posts = {}
-PLEASE_LOGIN_FIRST = bad("Please login first.")
-POST_NOT_EXISTS = bad("Post does not exist.")
+userList = {}
+boardList = {}
+postList = {}
 
 
 class Client:
 
     username = None
+    chatroom = None
 
-    @validateTokens(("boardname", ))
-    def createBoard(self, tokens):
+    def requireUserLoggedIn(self):
         if not self.username:
-            return PLEASE_LOGIN_FIRST
+            raise BadCommandError('Please login first')
+
+    @validateTokens(('port', ), (1,))
+    def createChatroom(self, tokens):
+        port = int(tokens[1])
+
+    @validateTokens(('boardname', ))
+    def createBoard(self, tokens):
+        self.requireUserLoggedIn()
 
         b = tokens[1]
-        if b in boards:
-            return bad("Board already exists.")
+        if b in boardList:
+            raise BadCommandError('Board already exists.')
 
-        boards[b] = {
-            "moderator": self.username,
-            "posts": set()
+        boardList[b] = {
+            'moderator': self.username,
+            'posts': set()
         }
-        return ok("Create board successfully.")
+        return ok('Create board successfully.')
 
     def createPost(self, tokens):
-        usage =  bad("Usage: create-post <board-name> --title <title> --content <content>")
+        usage = BadCommandError(
+            'Usage: create-post <board-name> --title <title> --content <content>')
         if len(tokens) < 3:
-            return usage
+            raise usage
         try:
-            titleIndex = tokens.index("--title")
-            contentIndex = tokens.index("--content")
+            titleIndex = tokens.index('--title')
+            contentIndex = tokens.index('--content')
             if titleIndex <= 1 or contentIndex <= 1:
-                return usage
+                raise usage
         except ValueError:
-            return usage
+            raise usage
 
-        if not self.username:
-            return PLEASE_LOGIN_FIRST
+        self.requireUserLoggedIn()
 
         b = tokens[1]
-        if b not in boards:
-            return bad("Board does not exist.")
+        if b not in boardList:
+            raise BadCommandError('Board does not exist.')
 
         postTitle = None
         postContent = None
         if titleIndex < contentIndex:
-            postTitle = " ".join(tokens[titleIndex+1:contentIndex])
-            postContent = " ".join(tokens[contentIndex+1:])
+            postTitle = ' '.join(tokens[titleIndex+1:contentIndex])
+            postContent = ' '.join(tokens[contentIndex+1:])
         else:
-            postTitle = " ".join(tokens[titleIndex+1:])
-            postContent = " ".join(tokens[contentIndex+1:titleIndex])
-        postContent = postContent.replace("<br>", "\n")
+            postTitle = ' '.join(tokens[titleIndex+1:])
+            postContent = ' '.join(tokens[contentIndex+1:titleIndex])
+        postContent = postContent.replace('<br>', '\n')
 
         id = nextPostId()
-        boards[b]["posts"].add(id)
-        posts[id] = {
-            "content": postContent,
-            "title": postTitle,
-            "comments": [],
-            "date": date.today(),
-            "author": self.username,
-            "board": b
+        boardList[b]['posts'].add(id)
+        postList[id] = {
+            'content': postContent,
+            'title': postTitle,
+            'comments': [],
+            'date': date.today(),
+            'author': self.username,
+            'board': b
         }
-        return ok("Create post successfully.")
+        return ok('Create post successfully.')
 
     @validateTokens(())
     def listBoard(self, tokens):
-        ret = "Index\tName\tModerator"
+        ret = 'Index\tName\tModerator'
         index = 0
-        for b in boards:
+        for b in boardList:
             index = index + 1
-            ret += "\n%d\t%s\t%s" % (index, b, boards[b]["moderator"])
+            ret += '\n%d\t%s\t%s' % (index, b, boardList[b]['moderator'])
         return ok(ret)
 
-    @validateTokens(("board-name", ))
+    @validateTokens(('board-name', ))
     def listPost(self, tokens):
         b = tokens[1]
 
-        if b not in boards:
-            return bad("Board does not exist.")
+        if b not in boardList:
+            raise BadCommandError('Board does not exist.')
 
-        ret = "S/N\tTitle\tAuthor\tDate"
-        for pid in boards[b]["posts"]:
-            post = posts[pid]
-            ret += "\n%d\t%s\t%s\t%s" % (pid, post["title"],
-                                         post["author"], post["date"].strftime('%m/%d'))
+        ret = 'S/N\tTitle\tAuthor\tDate'
+        for pid in boardList[b]['posts']:
+            post = postList[pid]
+            ret += '\n%d\t%s\t%s\t%s' % (pid, post['title'],
+                                         post['author'], post['date'].strftime('%m/%d'))
         return ok(ret)
 
-    @validateTokens(("post-S/N", ))
+    @validateTokens(('post-S/N', ), (1,))
     def read(self, tokens):
-        try:
-            id = int(tokens[1])
-            if id not in posts:
-                return POST_NOT_EXISTS
-        except ValueError:
-            return POST_NOT_EXISTS
+        id = int(tokens[1])
+        if id not in postList:
+            raise BadCommandError(POST_NOT_EXISTS)
 
-        post = posts[id]
-        ret = "Author: %s\nTitle: %s\nDate: %s\n--\n%s\n--" % (
-            post["author"], post["title"], post["date"].strftime("%m/%d"), post["content"])
-        for c in posts[id]["comments"]:
-            ret += "\n%s: %s" % (c["author"], c["content"])
+        post = postList[id]
+        ret = 'Author: %s\nTitle: %s\nDate: %s\n--\n%s\n--' % (
+            post['author'], post['title'], post['date'].strftime('%m/%d'), post['content'])
+        for c in postList[id]['comments']:
+            ret += '\n%s: %s' % (c['author'], c['content'])
         return ok(ret)
 
-    @validateTokens(("username", "password"))
+    @validateTokens(('username', 'password'))
     def login(self, tokens):
         if self.username:
-            return bad("Please logout first.")
+            raise BadCommandError('Please logout first.')
 
         u, p = tokens[1:]
-        if u not in users or users[u]["passwd"] != p:
-            return bad("Login failed.")
+        if u not in userList or userList[u]['passwd'] != p:
+            raise BadCommandError('Login failed.')
 
         self.username = u
-        return ok("Welcome, %s." % u)
+        return ok('Welcome, %s.' % u)
 
     @validateTokens(())
     def listUser(self, tokens):
-        res = "Name\tEmail\n"
-        for u in users:
-            res += "%s\t%s\n" % (u, users[u].email)
+        res = 'Name\tEmail\n'
+        for u in userList:
+            res += '%s\t%s\n' % (u, userList[u].email)
 
         return ok(res)
 
     @validateTokens(())
     def logout(self, tokens):
-        if not self.username:
-            return PLEASE_LOGIN_FIRST
+        self.requireUserLoggedIn()
 
         u = self.username
         self.username = None
-        return ok("Bye, %s." % u)
+        return ok('Bye, %s.' % u)
 
     @validateTokens(())
     def whoami(self, tokens):
-        if not self.username:
-            return PLEASE_LOGIN_FIRST
+        self.requireUserLoggedIn()
         return ok(self.username)
 
-    @validateTokens(("username", "email", "password"))
+    @validateTokens(('username', 'email', 'password'))
     def register(self, tokens):
         u, e, p = tokens[1:]
-        if u in users:
-            return bad("Username is already used.")
+        if u in userList:
+            raise BadCommandError('Username is already used.')
 
-        users[u] = {"email": e, "passwd": p}
-        return ok("Register successfully.")
+        userList[u] = {'email': e, 'passwd': p}
+        return ok('Register successfully.')
 
-    @validateTokens(("post-S/N", ))
+    @validateTokens(('post-S/N', ), (1,))
     def deletePost(self, tokens):
-        if not self.username:
-            return PLEASE_LOGIN_FIRST
+        self.requireUserLoggedIn()
 
-        try:
-            id = int(tokens[1])
-            if id not in posts:
-                return POST_NOT_EXISTS
-        except ValueError:
+        id = int(tokens[1])
+        if id not in postList:
             return POST_NOT_EXISTS
 
-        owner = posts[id]["author"]
+        owner = postList[id]['author']
         if self.username != owner:
-            return bad("Not the post owner.")
+            raise BadCommandError('Not the post owner.')
 
-        b = posts[id]["board"]
-        boards[b]["posts"].remove(id)
-        del posts[id]
-        return ok("Delete successfully.")
+        b = postList[id]['board']
+        boardList[b]['posts'].remove(id)
+        del postList[id]
+        return ok('Delete successfully.')
 
     def updatePost(self, tokens):
         postTitle = None
         postContent = None
-        if "--title" in tokens and "--content" in tokens:
-            titleIndex = tokens.index("--title")
-            contentIndex = tokens.index("--content")
+        if '--title' in tokens and '--content' in tokens:
+            titleIndex = tokens.index('--title')
+            contentIndex = tokens.index('--content')
             if titleIndex < contentIndex:
-                postTitle = " ".join(tokens[titleIndex + 1: contentIndex])
-                postContent = " ".join(tokens[contentIndex + 1])
+                postTitle = ' '.join(tokens[titleIndex + 1: contentIndex])
+                postContent = ' '.join(tokens[contentIndex + 1])
             else:
-                postTitle = " ".join(tokens[titleIndex + 1])
-                postContent = " ".join(tokens[contentIndex + 1: titleIndex])
-        elif "--title" in tokens:
-            titleIndex = tokens.index("--title")
-            postTitle = " ".join(tokens[titleIndex + 1:])
-        elif "--content" in tokens:
-            contentIndex = tokens.index("--content")
-            postContent = " ".join(tokens[contentIndex + 1:])
+                postTitle = ' '.join(tokens[titleIndex + 1])
+                postContent = ' '.join(tokens[contentIndex + 1: titleIndex])
+        elif '--title' in tokens:
+            titleIndex = tokens.index('--title')
+            postTitle = ' '.join(tokens[titleIndex + 1:])
+        elif '--content' in tokens:
+            contentIndex = tokens.index('--content')
+            postContent = ' '.join(tokens[contentIndex + 1:])
         else:
-            return bad("Usage: update-post <post-S/N> --title/content <new>")
+            raise BadCommandError(
+                'Usage: update-post <post-S/N> --title/content <new>')
 
-        if not self.username:
-            return PLEASE_LOGIN_FIRST
+        self.requireUserLoggedIn()
 
         try:
             id = int(tokens[1])
-            if id not in posts:
+            if id not in postList:
                 return POST_NOT_EXISTS
         except:
             return POST_NOT_EXISTS
 
-        if posts[id]["author"] != self.username:
-            return bad("Not the post owner.")
+        if postList[id]['author'] != self.username:
+            raise BadCommandError('Not the post owner.')
 
         if postTitle:
-            posts[id]["title"] = postTitle
+            postList[id]['title'] = postTitle
         if postContent:
-            postContent = postContent.replace("<br>", "\n")
-            posts[id]["content"] = postContent
-        return ok("Update successfully.")
+            postContent = postContent.replace('<br>', '\n')
+            postList[id]['content'] = postContent
+        return ok('Update successfully.')
 
     def comment(self, tokens):
         if len(tokens) < 3:
-            return bad("Usage: comment <post-S/N> <comment>")
+            raise BadCommandError('Usage: comment <post-S/N> <comment>')
 
-        if not self.username:
-            return PLEASE_LOGIN_FIRST
+        self.requireUserLoggedIn()
 
         try:
             id = int(tokens[1])
-            if id not in posts:
+            if id not in postList:
                 return POST_NOT_EXISTS
         except:
             return POST_NOT_EXISTS
 
-        posts[id]["comments"].append({
-            "author": self.username,
-            "content": " ".join(tokens[2:])
+        postList[id]['comments'].append({
+            'author': self.username,
+            'content': ' '.join(tokens[2:])
         })
-        return ok("Comment successfully.")
+        return ok('Comment successfully.')
 
     def consume(self, message: str):
         message = message.strip()
@@ -274,26 +297,29 @@ class Client:
             return None
 
         tokens = message.split()
-        return {
-            'list-user': self.listUser,
-            'login': self.login,
-            'logout': self.logout,
-            'whoami': self.whoami,
-            'register': self.register,
-            'consume': self.consume,
-            'create-board': self.createBoard,
-            'create-post': self.createPost,
-            'list-board': self.listBoard,
-            'list-post': self.listPost,
-            'update-post': self.updatePost,
-            'comment': self.comment,
-            'delete-post': self.deletePost,
-            'read': self.read
-        }.get(tokens[0], self.unknown)(tokens)
+        try:
+            return {
+                'list-user': self.listUser,
+                'login': self.login,
+                'logout': self.logout,
+                'whoami': self.whoami,
+                'register': self.register,
+                'consume': self.consume,
+                'create-board': self.createBoard,
+                'create-post': self.createPost,
+                'list-board': self.listBoard,
+                'list-post': self.listPost,
+                'update-post': self.updatePost,
+                'comment': self.comment,
+                'delete-post': self.deletePost,
+                'read': self.read
+            }.get(tokens[0], self.unknown)(tokens)
+        except BadCommandError as e:
+            return bad(e.reason)
 
     def unknown(self, tokens):
         # should not happen
-        return bad("Unknown command: `%s`." % (tokens[0]))
+        raise BadCommandError('Unknown command: `%s`.' % (tokens[0]))
 
     def run(self):
         while True:
@@ -305,11 +331,11 @@ class Client:
             reply = self.consume(data)
             if reply:
                 reply = json.dumps(reply)
-                #print("TCP: `%s`" % reply)
+                # print('TCP: `%s`' % reply)
                 self.sc.send(reply.encode('utf-8'))
 
     def __init__(self, sc: socket.socket):
-        print("New Connection.")
+        print('New Connection.')
         self.sc = sc
 
 
@@ -317,7 +343,7 @@ def runTcpServer(port: int):
 
     ss = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     ss.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    ss.bind(("127.0.0.1", port))
+    ss.bind(('127.0.0.1', port))
     ss.listen()
 
     while True:
@@ -333,12 +359,12 @@ def runTcpServer(port: int):
 
 def main():
     if len(sys.argv) != 2:
-        print("Usage: ./server <port>")
+        print('Usage: ./server <port>')
         exit(1)
 
     port = int(sys.argv[1])
     runTcpServer(port)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
