@@ -5,7 +5,7 @@ import sys
 import threading
 import json
 from datetime import date
-from typing import Tuple, List
+from typing import Tuple, List, Optional
 
 
 class BadCommandError(Exception):
@@ -27,8 +27,11 @@ def nextPostId():
     return postId
 
 
-def ok(msg: str):
-    return {'status': 200, 'message': msg}
+def ok(msg: Optional[str]):
+    if str:
+        return {'status': 200, 'message': msg}
+    else:
+        return {'status': 200}
 
 
 def bad(msg: str):
@@ -63,15 +66,20 @@ def validateTokens(usage: Tuple[str], reqInt: Tuple[int] = ()):
     return wrapper
 
 
-userList = {}
+userList = {
+    'leo': {
+        'passwd': 'leo',
+        'email': 'leo@leo.com'
+    }
+}
 boardList = {}
 postList = {}
+chatroomList = {}
 
 
 class Client:
 
     username = None
-    chatroom = None
 
     def requireUserLoggedIn(self):
         if not self.username:
@@ -79,7 +87,15 @@ class Client:
 
     @validateTokens(('port', ), (1,))
     def createChatroom(self, tokens):
+        self.requireUserLoggedIn()
+        if self.username in chatroomList:
+            raise BadCommandError('User has already created the chatroom.')
         port = int(tokens[1])
+        chatroomList[self.username] = { 'port': port }
+        return {
+            'status': 200,
+            'port': port
+        }
 
     @validateTokens(('boardname', ))
     def createBoard(self, tokens):
@@ -198,6 +214,7 @@ class Client:
 
         u = self.username
         self.username = None
+
         return ok('Bye, %s.' % u)
 
     @validateTokens(())
@@ -312,13 +329,13 @@ class Client:
                 'update-post': self.updatePost,
                 'comment': self.comment,
                 'delete-post': self.deletePost,
-                'read': self.read
+                'read': self.read,
+                'create-chatroom': self.createChatroom
             }.get(tokens[0], self.unknown)(tokens)
         except BadCommandError as e:
             return bad(e.reason)
 
     def unknown(self, tokens):
-        # should not happen
         raise BadCommandError('Unknown command: `%s`.' % (tokens[0]))
 
     def run(self):

@@ -3,17 +3,94 @@
 import socket
 import sys
 import json
+import threading
+from queue import Queue
 
 BUF_SIZE = 4096
 
 
+def tcpSentMessage(sc: socket.socket, message: str):
+    sc.send(message.encode('utf-8'))
+
+def tcpReceiveMessage(sc: socket.socket):
+    msg, _ = sc.recvfrom(BUF_SIZE)
+    if not msg:
+        raise IOError()
+    msg = msg.decode('utf-8')
+    return msg
+
+class ChatroomServer:
+
+    flag = True
+    msgQueue = Queue()
+    userList = []
+
+    def procPlayground(self):
+        while self.flag:
+            msg = self.msgQueue.get(True)
+            # TODO notifyMessage
+
+    def userPlayground(self, sc: socket.socket):
+        try:
+            # Get username data
+            msg = tcpReceiveMessage(sc)
+            username = msg
+        except IOError:
+            pass
+
+        try:
+            # add to user list
+            self.userList.append(sc)
+
+            while self.flag:
+                msg = tcpReceiveMessage(sc)
+                self.msgQueue.put({'username': username, 'message': msg})
+        
+        except IOError:
+            self.userList.remove(sc)
+
+    def run(self, port: int):
+        self.ss = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.ss.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.ss.bind(('127.0.0.1', port))
+        self.ss.listen()
+
+        tProc = threading.Thread(target=self.procPlayground)
+        tProc.daemon = True
+        tProc.start()
+
+        while self.flag:
+            sc, _ = self.ss.accept()
+            t = threading.Thread(target=self.userPlayground, args=(sc))
+            t.daemon = True
+            t.start()
+    
+    def stop(self):
+        self.flag = False
+        self.ss.close()
+
+
 class Client:
 
-    sc = None
+    chatroomServer = None
 
-    def trivial(self, line: str):
-        res = self.send(line)
-        print(res["message"])
+    def attachChatroom(self):
+        while(1):
+            line = input('$ ')
+            # TODO send message
+
+    def createChatroom(self, port):
+        assert(not self.chatroomServer)
+        print('Start to create chatroom...')
+        self.chatrommServer = ChatroomServer()
+        t = threading.Thread(target=self.chatrommServer.run, args=(port,))
+        t.daemon = True
+        t.start()
+        self.attachChatroom()
+
+    def trivialTcp(self, line: str):
+        res = self.tcpSentRequest(line)
+        return res['message']
 
     def exit(self):
         self.sc.close()
@@ -27,20 +104,33 @@ class Client:
         command = line.split()[0]
         if command == 'exit':
             self.exit()
-        else:
-            self.trivial(line)
+            return
 
-    def send(self, message: str):
-        self.sc.send(message.encode('utf-8'))
-        msg, _ = self.sc.recvfrom(BUF_SIZE)
-        msg = msg.decode('utf-8')
-        msg = json.loads(msg)
-        return msg
+        res = self.tcpSentRequest(line)
+        if res['status'] != 200:
+            print(res['message'])
+            return
+
+        if command == 'create-chatroom':
+            self.createChatroom(res['port'])
+        #elif command == 'join-chatroom':
+        #    self.joinChatroom(res['ip'], res['port'])
+        else:
+            print(res['message'])
+
+    def tcpSentRequest(self, message: str):
+        tcpSentMessage(self.sc, message)
+        msg = tcpReceiveMessage(self.sc)
+        return json.loads(msg)
 
     def run(self):
-        while True:
-            line = input("% ")
-            self.consume(line)
+        try:
+            while True:
+                line = input('% ')
+                self.consume(line)
+        except IOError:
+            if self.sc:
+                self.sc.close()
 
     def __init__(self, sc: socket.socket):
         self.sc = sc
@@ -49,7 +139,7 @@ class Client:
 def main():
 
     if len(sys.argv) != 3:
-        print("Usage: client <address> <port>")
+        print('Usage: client <address> <port>')
         exit(-1)
 
     addr = sys.argv[1]
@@ -67,5 +157,5 @@ def main():
     client.run()
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
