@@ -67,9 +67,13 @@ def validateTokens(usage: Tuple[str], reqInt: Tuple[int] = ()):
 
 
 userList = {
-    'leo': {
-        'passwd': 'leo',
-        'email': 'leo@leo.com'
+    'a': {
+        'passwd': 'a',
+        'email': 'a'
+    }, 
+    'b': {
+        'passwd': 'b',
+        'email': 'b'
     }
 }
 boardList = {}
@@ -91,10 +95,23 @@ class Client:
         if self.username in chatroomList:
             raise BadCommandError('User has already created the chatroom.')
         port = int(tokens[1])
-        chatroomList[self.username] = { 'port': port }
+        chatroomList[self.username] = { 'port': port, 'addr':  self.sc.getsockname()[0] }
         return {
             'status': 200,
             'port': port,
+            'username': self.username
+        }
+    
+    @validateTokens(('chatroom_name', ))
+    def joinChatroom(self, tokens):
+        self.requireUserLoggedIn()
+        crName = tokens[1]
+        if crName not in chatroomList:
+            raise BadCommandError('The chatroom does not exist or the chatroom is close.')
+        return {
+            'status': 200,
+            'port': chatroomList[crName]['port'],
+            'addr': chatroomList[crName]['addr'],
             'username': self.username
         }
 
@@ -331,7 +348,8 @@ class Client:
                 'comment': self.comment,
                 'delete-post': self.deletePost,
                 'read': self.read,
-                'create-chatroom': self.createChatroom
+                'create-chatroom': self.createChatroom,
+                'join-chatroom': self.joinChatroom
             }.get(tokens[0], self.unknown)(tokens)
         except BadCommandError as e:
             return bad(e.reason)
