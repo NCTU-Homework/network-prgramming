@@ -135,6 +135,9 @@ class Client:
         crName = tokens[1]
         if crName not in chatroomList:
             return bad('The chatroom does not exist or the chatroom is close.')
+        if not chatroomList[crName]['open']:
+            return bad('The chatroom does not exist or the chatroom is close.')
+
         return {
             'status': 200,
             'port': chatroomList[crName]['port'],
@@ -271,8 +274,12 @@ class Client:
     def logout(self, tokens):
         self.requireUserLoggedIn()
 
+        if self.username in chatroomList and chatroomList[self.username]['open']:
+            return bad('Please do "attach" and "leave-chatroom" first.')
+
         u = self.username
         self.username = None
+        del chatroomList[u]
 
         return ok('Bye, %s.' % u)
 

@@ -116,6 +116,11 @@ class ChatroomClient:
     flag = True
     socket = None
     owner = False
+    isAttach = True
+
+    def printchat(self, msg: str):
+        if self.isAttach:
+            print(msg)
 
     def playground(self):
         try:
@@ -123,11 +128,11 @@ class ChatroomClient:
                 msg = tcpReceiveMessage(self.socket)
                 if msg == '__EOF__':
                     if self.flag:
-                        print('sys[%s]: the chatroom is close.' % (hmmNow()))
+                        self.printchat('sys[%s]: the chatroom is close.' % (hmmNow()))
                         self.close()
                     break
                 msg = json.loads(msg)
-                print('%s[%s]: %s' %
+                self.printchat('%s[%s]: %s' %
                         (msg['username'], msg['time'], msg['message']))
         except IOError as e:
             self.close()
@@ -146,7 +151,8 @@ class ChatroomClient:
         tcpSendMessage(self.socket, username)
 
     def attach(self):
-        print("""*****************************
+        self.isAttach = True
+        self.printchat("""*****************************
 ** Welcome to the chatroom **
 *****************************""")
         try:
@@ -155,6 +161,7 @@ class ChatroomClient:
                 if len(line) == 0:
                     continue
                 elif line == 'detach':
+                    self.isAttach = False
                     return False
                 elif line.strip() == 'leave-chatroom':
                     if self.owner:
@@ -188,7 +195,7 @@ class Client:
         assert(not self.chatroomClient)
         print('Start to create chatroom...')
 
-        self.chatrommServer = ChatroomServer(port, username)
+        self.chatroomServer = ChatroomServer(port, username)
         self.chatroomClient = ChatroomClient('127.0.0.1', port, username, True)
         self.attachChatroom()
 
@@ -204,7 +211,7 @@ class Client:
         assert(self.chatroomClient)
         foul = self.chatroomClient.attach()
         if foul:
-            self.chatrommServer = None
+            self.chatroomServer = None
             self.chatroomClient = None
             self.tcpSendRequest('close-chatroom')
         print('Welcome back to BBS.')
@@ -214,6 +221,10 @@ class Client:
         return res['message']
     
     def exit(self):
+        print(self.chatroomServer)
+        if self.chatroomServer is not None:
+            self.tcpSendRequest('close-chatroom')
+        self.tcpSendRequest('logout')
         self.sc.close()
         exit()
 
