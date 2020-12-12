@@ -6,12 +6,16 @@ import json
 import threading
 from queue import Queue
 from datetime import datetime
+import traceback
 
 BUF_SIZE = 4096
 
 
 def tcpSendMessage(sc: socket.socket, message: str):
-    sc.send(message.encode('utf-8'))
+    try:
+        sc.sendall(message.encode('utf-8'))
+    except Exception as e:
+        raise IOError()
 
 
 def tcpReceiveMessage(sc: socket.socket):
@@ -60,15 +64,12 @@ class ChatroomServer:
             self.broadcast(json.dumps(msg))
 
     def userPlayground(self, sc: socket.socket):
-        print('[Debug] chatroom has new client.')
         username = ''
         try:
             # Get username data
             msg = tcpReceiveMessage(sc)
             username = msg
-            print('[Debug] username: %s' % (username))
         except IOError as e:
-            print(e)
             pass
         
         try:
@@ -90,7 +91,7 @@ class ChatroomServer:
                 self.msgQueue.put({'username': username, 'message': msg})
 
         except IOError as e:
-            print(e)
+            pass
         
         self.userList.remove(sc)
 
@@ -101,18 +102,14 @@ class ChatroomServer:
                 t = threading.Thread(target=self.userPlayground, args=(sc, ))
                 t.daemon = True
                 t.start()
-        except IOError as e:
-            print(e)
+        except Exception as e:
             self.close()
 
     def close(self):
         if self.flag:
-            print('[Debug] Close chatroom server')
             self.flag = False
-            self.ss.shutdown(1)
+            self.ss.shutdown(socket.SHUT_RDWR)
             self.ss.close()
-            print('[Debug] server closed')
-
 
 class ChatroomClient:
 
@@ -121,15 +118,20 @@ class ChatroomClient:
     owner = False
 
     def playground(self):
-        while self.flag:
-            msg = tcpReceiveMessage(self.socket)
-            if msg == '__EOF__':
-                print('sys[%s]: the chatroom is close.' % (hmmNow()))
-                self.close()
-                break
-            msg = json.loads(msg)
-            print('%s[%s]: %s' %
-                    (msg['username'], msg['time'], msg['message']))
+        try:
+            while self.flag:
+                msg = tcpReceiveMessage(self.socket)
+                if msg == '__EOF__':
+                    if self.flag:
+                        print('sys[%s]: the chatroom is close.' % (hmmNow()))
+                        self.close()
+                    break
+                msg = json.loads(msg)
+                print('%s[%s]: %s' %
+                        (msg['username'], msg['time'], msg['message']))
+        except IOError as e:
+            self.close()
+            pass
 
     def __init__(self, addr: str, port: int, username: str, isOwner=False):
         self.owner = isOwner
@@ -162,16 +164,17 @@ class ChatroomClient:
                 else:
                     self.sendChat(line)
         except IOError as e:
-            print(e)
             self.close()
+            return True
+        
 
     def sendChat(self, line: str):
         tcpSendMessage(self.socket, line)
 
     def close(self):
         if self.flag:
-            print('[Debug] Close chatroom client')
             self.flag = False
+            self.socket.shutdown(socket.SHUT_RDWR)
             self.socket.close()
 
 
@@ -187,20 +190,29 @@ class Client:
 
         self.chatrommServer = ChatroomServer(port, username)
         self.chatroomClient = ChatroomClient('127.0.0.1', port, username, True)
-        self.chatroomClient.attach()
-        print('Welcome back to BBS.')
+        self.attachChatroom()
 
     def joinChatroom(self, addr: str, port: int, username: str):
-        if self.chatroomClient:
-            self.chatroomClient.leave()
+        assert(not self.chatroomClient)
+
         self.chatroomClient = ChatroomClient(addr, port, username)
         self.chatroomClient.attach()
+        self.chatroomClient = None
+        print('Welcome back to BBS.')
+    
+    def attachChatroom(self):
+        assert(self.chatroomClient)
+        foul = self.chatroomClient.attach()
+        if foul:
+            self.chatrommServer = None
+            self.chatroomClient = None
+            self.tcpSendRequest('close-chatroom')
         print('Welcome back to BBS.')
 
     def trivialTcp(self, line: str):
-        res = self.tcpSentRequest(line)
+        res = self.tcpSendRequest(line)
         return res['message']
-
+    
     def exit(self):
         self.sc.close()
         exit()
@@ -215,19 +227,21 @@ class Client:
             self.exit()
             return
 
-        res = self.tcpSentRequest(line)
+        res = self.tcpSendRequest(line)
         if res['status'] != 200:
             print(res['message'])
             return
 
-        if command == 'create-chatroom':
+        if command == 'create-chatroom' or command == 'restart-chatroom':
             self.createChatroom(res['port'], res['username'])
         elif command == 'join-chatroom':
             self.joinChatroom(res['addr'], res['port'], res['username'])
+        elif command == 'attach':
+            self.attachChatroom()
         else:
             print(res['message'])
 
-    def tcpSentRequest(self, message: str):
+    def tcpSendRequest(self, message: str):
         tcpSendMessage(self.sc, message)
         msg = tcpReceiveMessage(self.sc)
         return json.loads(msg)

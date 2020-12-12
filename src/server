@@ -27,8 +27,8 @@ def nextPostId():
     return postId
 
 
-def ok(msg: Optional[str]):
-    if str:
+def ok(msg: Optional[str] = None):
+    if msg:
         return {'status': 200, 'message': msg}
     else:
         return {'status': 200}
@@ -46,7 +46,7 @@ def isInt(x: str):
         return False
 
 
-POST_NOT_EXISTS = 'Post does not exist.'
+POST_NOT_EXISTS = bad('Post does not exist.')
 
 
 def validateTokens(usage: Tuple[str], reqInt: Tuple[int] = ()):
@@ -70,7 +70,7 @@ userList = {
     'a': {
         'passwd': 'a',
         'email': 'a'
-    }, 
+    },
     'b': {
         'passwd': 'b',
         'email': 'b'
@@ -92,26 +92,67 @@ class Client:
     @validateTokens(('port', ), (1,))
     def createChatroom(self, tokens):
         self.requireUserLoggedIn()
+
         if self.username in chatroomList:
-            raise BadCommandError('User has already created the chatroom.')
+            return bad('User has already created the chatroom.')
+
         port = int(tokens[1])
-        chatroomList[self.username] = { 'port': port, 'addr':  self.sc.getsockname()[0] }
+        chatroomList[self.username] = {
+            'port': port,
+            'addr': self.sc.getsockname()[0],
+            'open': True
+        }
         return {
             'status': 200,
             'port': port,
             'username': self.username
         }
-    
+
+    @validateTokens(())
+    def closeChatroom(self, tokens):
+        self.requireUserLoggedIn()
+        if not self.username in chatroomList:
+            return bad('Please create-chatroom first.')
+        chatroomList[self.username]['open'] = False
+        return ok()
+
+    @validateTokens(())
+    def attachChatroom(self, tokens):
+        self.requireUserLoggedIn()
+        if not self.username in chatroomList:
+            return bad('Please create-chatroom first.')
+        if not chatroomList[self.username]['open']:
+            return bad('Please restart-chatroom first.')
+        return {
+            'status': 200,
+            'port': chatroomList[self.username]['port'],
+            'username': self.username
+        }
+
     @validateTokens(('chatroom_name', ))
     def joinChatroom(self, tokens):
         self.requireUserLoggedIn()
         crName = tokens[1]
         if crName not in chatroomList:
-            raise BadCommandError('The chatroom does not exist or the chatroom is close.')
+            return bad('The chatroom does not exist or the chatroom is close.')
         return {
             'status': 200,
             'port': chatroomList[crName]['port'],
             'addr': chatroomList[crName]['addr'],
+            'username': self.username
+        }
+    
+    @validateTokens(())
+    def restartChatroom(self, tokens):
+        self.requireUserLoggedIn()
+        if self.username not in chatroomList:
+            return bad('Please create-chatroom first.')
+        if chatroomList[self.username]['open']:
+            return bad('Your chatroom is still running.')
+        chatroomList[self.username]['open'] = True
+        return {
+            'status': 200,
+            'port': chatroomList[self.username]['port'],
             'username': self.username
         }
 
@@ -121,7 +162,7 @@ class Client:
 
         b = tokens[1]
         if b in boardList:
-            raise BadCommandError('Board already exists.')
+            return bad('Board already exists.')
 
         boardList[b] = {
             'moderator': self.username,
@@ -146,7 +187,7 @@ class Client:
 
         b = tokens[1]
         if b not in boardList:
-            raise BadCommandError('Board does not exist.')
+            return bad('Board does not exist.')
 
         postTitle = None
         postContent = None
@@ -184,7 +225,7 @@ class Client:
         b = tokens[1]
 
         if b not in boardList:
-            raise BadCommandError('Board does not exist.')
+            return bad('Board does not exist.')
 
         ret = 'S/N\tTitle\tAuthor\tDate'
         for pid in boardList[b]['posts']:
@@ -197,7 +238,7 @@ class Client:
     def read(self, tokens):
         id = int(tokens[1])
         if id not in postList:
-            raise BadCommandError(POST_NOT_EXISTS)
+            return POST_NOT_EXISTS
 
         post = postList[id]
         ret = 'Author: %s\nTitle: %s\nDate: %s\n--\n%s\n--' % (
@@ -209,11 +250,11 @@ class Client:
     @validateTokens(('username', 'password'))
     def login(self, tokens):
         if self.username:
-            raise BadCommandError('Please logout first.')
+            return bad('Please logout first.')
 
         u, p = tokens[1:]
         if u not in userList or userList[u]['passwd'] != p:
-            raise BadCommandError('Login failed.')
+            return bad('Login failed.')
 
         self.username = u
         return ok('Welcome, %s.' % u)
@@ -244,7 +285,7 @@ class Client:
     def register(self, tokens):
         u, e, p = tokens[1:]
         if u in userList:
-            raise BadCommandError('Username is already used.')
+            return bad('Username is already used.')
 
         userList[u] = {'email': e, 'passwd': p}
         return ok('Register successfully.')
@@ -259,7 +300,7 @@ class Client:
 
         owner = postList[id]['author']
         if self.username != owner:
-            raise BadCommandError('Not the post owner.')
+            return bad('Not the post owner.')
 
         b = postList[id]['board']
         boardList[b]['posts'].remove(id)
@@ -285,7 +326,7 @@ class Client:
             contentIndex = tokens.index('--content')
             postContent = ' '.join(tokens[contentIndex + 1:])
         else:
-            raise BadCommandError(
+            return bad(
                 'Usage: update-post <post-S/N> --title/content <new>')
 
         self.requireUserLoggedIn()
@@ -298,7 +339,7 @@ class Client:
             return POST_NOT_EXISTS
 
         if postList[id]['author'] != self.username:
-            raise BadCommandError('Not the post owner.')
+            return bad('Not the post owner.')
 
         if postTitle:
             postList[id]['title'] = postTitle
@@ -309,7 +350,7 @@ class Client:
 
     def comment(self, tokens):
         if len(tokens) < 3:
-            raise BadCommandError('Usage: comment <post-S/N> <comment>')
+            return bad('Usage: comment <post-S/N> <comment>')
 
         self.requireUserLoggedIn()
 
@@ -349,13 +390,16 @@ class Client:
                 'delete-post': self.deletePost,
                 'read': self.read,
                 'create-chatroom': self.createChatroom,
-                'join-chatroom': self.joinChatroom
+                'join-chatroom': self.joinChatroom,
+                'close-chatroom': self.closeChatroom,
+                'attach': self.attachChatroom,
+                'restart-chatroom': self.restartChatroom
             }.get(tokens[0], self.unknown)(tokens)
         except BadCommandError as e:
             return bad(e.reason)
 
     def unknown(self, tokens):
-        raise BadCommandError('Unknown command: `%s`.' % (tokens[0]))
+        return bad('Unknown command: `%s`.' % (tokens[0]))
 
     def run(self):
         while True:
@@ -367,7 +411,7 @@ class Client:
             reply = self.consume(data)
             if reply:
                 reply = json.dumps(reply)
-                # print('TCP: `%s`' % reply)
+                #print('TCP: `%s`' % reply)
                 self.sc.send(reply.encode('utf-8'))
 
     def __init__(self, sc: socket.socket):
