@@ -7,6 +7,7 @@ import threading
 from queue import Queue
 from datetime import datetime
 import traceback
+from collections import deque
 
 BUF_SIZE = 4096
 
@@ -36,6 +37,7 @@ class ChatroomServer:
     flag = True
     msgQueue = Queue()
     userList = []
+    chatQueue = deque()
 
     def __init__(self, port: int, owner: str):
         self.owner = owner
@@ -61,6 +63,9 @@ class ChatroomServer:
         while self.flag:
             msg = self.msgQueue.get(True)
             msg['time'] = hmmNow()
+            if len(self.chatQueue) == 3:
+                self.chatQueue.popleft()
+            self.chatQueue.append(msg)
             self.broadcast(json.dumps(msg))
 
     def userPlayground(self, sc: socket.socket):
@@ -80,6 +85,11 @@ class ChatroomServer:
                 'time': hmmNow()
             }))
 
+            # show history message
+            for i in range(min(3, len(self.chatQueue))):
+                tcpSendMessage(sc, json.dumps(self.chatQueue[i]))
+
+            # add this user to socket list
             self.userList.append(sc)
 
             while self.flag:
@@ -117,10 +127,12 @@ class ChatroomClient:
     socket = None
     owner = False
     isAttach = True
+    chatQueue = deque()
 
-    def printchat(self, msg: str):
+    def printchat(self, msg):
         if self.isAttach:
-            print(msg)
+            chatstr = '%s[%s]: %s' % (msg['username'], msg['time'], msg['message'])
+            print(chatstr)
 
     def playground(self):
         try:
@@ -131,9 +143,14 @@ class ChatroomClient:
                         self.printchat('sys[%s]: the chatroom is close.' % (hmmNow()))
                         self.close()
                     break
+
                 msg = json.loads(msg)
-                self.printchat('%s[%s]: %s' %
-                        (msg['username'], msg['time'], msg['message']))
+                if self.owner:
+                    if len(self.chatQueue) == 3:
+                        self.chatQueue.popleft()
+                    self.chatQueue.append(msg)
+                self.printchat(msg)
+                
         except IOError as e:
             self.close()
             pass
@@ -150,17 +167,28 @@ class ChatroomClient:
         # send client username
         tcpSendMessage(self.socket, username)
 
+    def showWelcome(self):
+        print('*****************************')
+        print('** Welcome to the chatroom **')
+        print('*****************************')
+
+
+    def showHistoryChat(self):
+        for i in range(min(3, len(self.chatQueue))):
+            self.printchat(self.chatQueue[i])
+
     def attach(self):
         self.isAttach = True
-        self.printchat("""*****************************
-** Welcome to the chatroom **
-*****************************""")
+        self.showWelcome()
+        if self.owner:
+            self.showHistoryChat()
+
         try:
             while self.flag:
                 line = input().strip()
                 if len(line) == 0:
                     continue
-                elif line == 'detach':
+                elif line == 'detach' and self.owner:
                     self.isAttach = False
                     return False
                 elif line.strip() == 'leave-chatroom':
@@ -168,8 +196,7 @@ class ChatroomClient:
                         tcpSendMessage(self.socket, '__EOF__')
                     self.close()
                     return True
-                else:
-                    self.sendChat(line)
+                self.sendChat(line)
         except IOError as e:
             self.close()
             return True
@@ -221,7 +248,6 @@ class Client:
         return res['message']
     
     def exit(self):
-        print(self.chatroomServer)
         if self.chatroomServer is not None:
             self.tcpSendRequest('close-chatroom')
         self.tcpSendRequest('logout')
