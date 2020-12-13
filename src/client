@@ -27,6 +27,15 @@ def tcpReceiveMessage(sc: socket.socket):
     return msg
 
 
+def udpReuqest(addr: str, port: int, message: str):
+    udpSocket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    udpSocket.sendto(message.encode('utf-8'), (addr, port))
+    data, _ = udpSocket.recvfrom(BUF_SIZE)
+    data = data.decode('utf-8')
+    udpSocket.close()
+    return data
+
+
 def hmmNow():
     time = datetime.now()
     return '%d:%02d' % (time.minute, time.second)
@@ -76,7 +85,7 @@ class ChatroomServer:
             username = msg
         except IOError as e:
             pass
-        
+
         try:
             # broadcast that new user joins
             self.broadcast(json.dumps({
@@ -102,7 +111,7 @@ class ChatroomServer:
 
         except IOError as e:
             pass
-        
+
         self.userList.remove(sc)
 
     def run(self):
@@ -121,6 +130,7 @@ class ChatroomServer:
             self.ss.shutdown(socket.SHUT_RDWR)
             self.ss.close()
 
+
 class ChatroomClient:
 
     flag = True
@@ -131,7 +141,8 @@ class ChatroomClient:
 
     def printchat(self, msg):
         if self.isAttach:
-            chatstr = '%s[%s]: %s' % (msg['username'], msg['time'], msg['message'])
+            chatstr = '%s[%s]: %s' % (
+                msg['username'], msg['time'], msg['message'])
             print(chatstr)
 
     def playground(self):
@@ -140,7 +151,8 @@ class ChatroomClient:
                 msg = tcpReceiveMessage(self.socket)
                 if msg == '__EOF__':
                     if self.flag:
-                        self.printchat('sys[%s]: the chatroom is close.' % (hmmNow()))
+                        self.printchat(
+                            'sys[%s]: the chatroom is close.' % (hmmNow()))
                         self.close()
                     break
 
@@ -150,7 +162,7 @@ class ChatroomClient:
                         self.chatQueue.popleft()
                     self.chatQueue.append(msg)
                 self.printchat(msg)
-                
+
         except IOError as e:
             self.close()
             pass
@@ -171,7 +183,6 @@ class ChatroomClient:
         print('*****************************')
         print('** Welcome to the chatroom **')
         print('*****************************')
-
 
     def showHistoryChat(self):
         for i in range(min(3, len(self.chatQueue))):
@@ -200,7 +211,6 @@ class ChatroomClient:
         except IOError as e:
             self.close()
             return True
-        
 
     def sendChat(self, line: str):
         tcpSendMessage(self.socket, line)
@@ -233,7 +243,7 @@ class Client:
         self.chatroomClient.attach()
         self.chatroomClient = None
         print('Welcome back to BBS.')
-    
+
     def attachChatroom(self):
         assert(self.chatroomClient)
         foul = self.chatroomClient.attach()
@@ -246,12 +256,12 @@ class Client:
     def trivialTcp(self, line: str):
         res = self.tcpSendRequest(line)
         return res['message']
-    
+
     def exit(self):
         if self.chatroomServer is not None:
             self.tcpSendRequest('close-chatroom')
         self.tcpSendRequest('logout')
-        self.sc.close()
+        self.tcpSocket.close()
         exit()
 
     def consume(self, line: str):
@@ -264,7 +274,11 @@ class Client:
             self.exit()
             return
 
-        res = self.tcpSendRequest(line)
+        if command == 'list-chatroom':
+            res = self.udpSendRequest(line)
+        else:
+            res = self.tcpSendRequest(line)
+
         if res['status'] != 200:
             print(res['message'])
             return
@@ -279,42 +293,46 @@ class Client:
             print(res['message'])
 
     def tcpSendRequest(self, message: str):
-        tcpSendMessage(self.sc, message)
-        msg = tcpReceiveMessage(self.sc)
+        tcpSendMessage(self.tcpSocket, message)
+        msg = tcpReceiveMessage(self.tcpSocket)
         return json.loads(msg)
 
+    def udpSendRequest(self, message: str):
+        try:
+            msg = udpReuqest(self.serverAddr, self.serverPort, message)
+            return json.loads(msg)
+        except Exception as e:
+            print(e)
+            raise e
+        
+
     def run(self):
+        self.tcpSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.tcpSocket.connect((self.serverAddr, self.serverPort))
+        print('********************************')
+        print('** Welcome to the BBS server. **')
+        print('********************************')
         try:
             while True:
                 line = input('% ')
                 self.consume(line)
         except IOError as e:
-            print(e)
-            if self.sc:
-                self.sc.close()
+            if self.tcpSocket:
+                self.tcpSocket.close()
 
-    def __init__(self, sc: socket.socket):
-        self.sc = sc
+    def __init__(self, addr: str, port: int):
+        self.serverAddr = addr
+        self.serverPort = port
 
 
 def main():
-
     if len(sys.argv) != 3:
         print('Usage: client <address> <port>')
         exit(-1)
 
     addr = sys.argv[1]
     port = int(sys.argv[2])
-
-    tcpSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    tcpSocket.connect((addr, port))
-
-    welcome = """********************************
-** Welcome to the BBS server. **
-********************************"""
-    print(welcome)
-
-    client = Client(tcpSocket)
+    client = Client(addr, port)
     client.run()
 
 

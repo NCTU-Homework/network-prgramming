@@ -8,6 +8,20 @@ from datetime import date
 from typing import Tuple, List, Optional
 
 
+def udpSendMessage(addr: str, port: int, message: str):
+    udpSocket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    udpSocket.sendto(message.encode('utf-8'), (addr, port))
+    udpSocket.close()
+
+
+def udpReceiveMessage(addr: str, port: int):
+    udpSocket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    udpSocket.bind((addr, port))
+    data, addr = udpSocket.recvfrom(BUF_SIZE)
+    udpSocket.close()
+    return data, addr
+
+
 class BadCommandError(Exception):
     def __init__(self, message: str):
         self.reason = message
@@ -99,7 +113,7 @@ class Client:
         port = int(tokens[1])
         chatroomList[self.username] = {
             'port': port,
-            'addr': self.sc.getsockname()[0],
+            'addr': self.tcpSocket.getpeername()[0],
             'open': True
         }
         return {
@@ -107,6 +121,15 @@ class Client:
             'port': port,
             'username': self.username
         }
+
+    @validateTokens(())
+    def listChatroom(self, tokens):
+        self.requireUserLoggedIn()
+        msg = 'Chatroom_name\tStatus'
+        for k in chatroomList:
+            msg += '\n%s\t%s' % (k,
+                                 'open' if chatroomList[k]['open'] else 'close')
+        return ok(msg)
 
     @validateTokens(())
     def closeChatroom(self, tokens):
@@ -144,7 +167,7 @@ class Client:
             'addr': chatroomList[crName]['addr'],
             'username': self.username
         }
-    
+
     @validateTokens(())
     def restartChatroom(self, tokens):
         self.requireUserLoggedIn()
@@ -400,7 +423,8 @@ class Client:
                 'join-chatroom': self.joinChatroom,
                 'close-chatroom': self.closeChatroom,
                 'attach': self.attachChatroom,
-                'restart-chatroom': self.restartChatroom
+                'restart-chatroom': self.restartChatroom,
+                'list-chatroom': self.listChatroom
             }.get(tokens[0], self.unknown)(tokens)
         except BadCommandError as e:
             return bad(e.reason)
@@ -408,22 +432,39 @@ class Client:
     def unknown(self, tokens):
         return bad('Unknown command: `%s`.' % (tokens[0]))
 
-    def run(self):
+    def tcpPlayground(self):
+        try:
+            while True:
+                data = self.tcpSocket.recv(BUF_SIZE)
+                if not data:
+                    return
+
+                data = data.decode('utf-8')
+                reply = self.consume(data)
+                if reply:
+                    reply = json.dumps(reply)
+                    #print('TCP: `%s`' % reply)
+                    self.tcpSocket.send(reply.encode('utf-8'))
+        except:
+            pass
+
+    def udpPlayground(self):
+        addr = self.tcpSocket.getsockname()[0]
+        port = self.tcpSocket.getsockname()[1]
         while True:
-            data, _ = self.sc.recvfrom(BUF_SIZE)
+            data, clAddr = udpReceiveMessage(addr, port)
             if not data:
                 return
-
             data = data.decode('utf-8')
             reply = self.consume(data)
             if reply:
                 reply = json.dumps(reply)
-                #print('TCP: `%s`' % reply)
-                self.sc.send(reply.encode('utf-8'))
+                #print('UDP: `%s`' % reply)
+                udpSendMessage(clAddr[0], clAddr[1], reply)
 
     def __init__(self, sc: socket.socket):
         print('New Connection.')
-        self.sc = sc
+        self.tcpSocket = sc
 
 
 def runTcpServer(port: int):
@@ -435,13 +476,15 @@ def runTcpServer(port: int):
 
     while True:
         sc, _ = ss.accept()
+        client = Client(sc)
 
-        def createTcpPlayground():
-            Client(sc).run()
-
-        t = threading.Thread(target=createTcpPlayground)
+        t = threading.Thread(target=client.tcpPlayground)
         t.daemon = True
         t.start()
+
+        u = threading.Thread(target=client.udpPlayground)
+        u.daemon = True
+        u.start()
 
 
 def main():
