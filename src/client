@@ -4,36 +4,116 @@ import socket
 import sys
 import json
 import threading
-from queue import Queue
+from threading import Thread, Lock, currentThread
+from queue import Empty, Queue
 from datetime import datetime
 import traceback
 from collections import deque
+from time import sleep
+import signal
 
 BUF_SIZE = 4096
+dev = False
 
 
-def tcpSendMessage(sc: socket.socket, message: str):
-    try:
-        sc.sendall(message.encode('utf-8'))
-    except Exception as e:
-        raise IOError()
+def printd(*args):
+    if dev:
+        print('[Debug]', args)
 
 
-def tcpReceiveMessage(sc: socket.socket):
-    msg = sc.recv(BUF_SIZE)
-    if not msg:
-        raise IOError()
-    msg = msg.decode('utf-8')
-    return msg
+class TcpSocket:
+
+    def __init__(self, first, second=None):
+        if not second:
+            # first = socket
+            self.socket = first
+        else:
+            # first = ip, second = port
+            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.socket.connect((first, second))
+
+        self.stream = self.socket.makefile('rw')
+
+    def writeLine(self, message: str):
+        printd('tcp send:', message)
+        self.stream.write(message + '\n')
+        self.stream.flush()
+
+    def readLine(self) -> str:
+        while True:
+            line = self.stream.readline()
+            if not line:
+                raise IOError
+            if len(line) <= 1:
+                continue
+            line = line[:-1]
+            printd('tcp get:', line)
+            return line
+
+    def getSock(self):
+        return self.socket.getsockname()
+
+    def getPeer(self):
+        return self.socket.getpeername()
+
+    def close(self):
+        # self.stream.close()
+        self.socket.shutdown(socket.SHUT_RDWR)
+        self.socket.close()
+        printd('a socket is closed.')
 
 
-def udpReuqest(addr: str, port: int, message: str):
-    udpSocket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    udpSocket.sendto(message.encode('utf-8'), (addr, port))
-    data, _ = udpSocket.recvfrom(BUF_SIZE)
-    data = data.decode('utf-8')
-    udpSocket.close()
-    return data
+class TcpServerSocket:
+
+    def __init__(self):
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+    def listen(self, addr: str, port: int):
+        self.socket.bind((addr, port))
+        self.socket.listen()
+        self.socket.settimeout(0.1)
+
+    def accept(self) -> TcpSocket:
+        return TcpSocket(self.socket.accept()[0])
+
+    def getSock(self):
+        try:
+            return self.socket.getsockname()
+        except socket.timeout:
+            raise IOError()
+
+    def close(self):
+        self.socket.shutdown(socket.SHUT_RDWR)
+        self.socket.close()
+        printd('close server socket')
+
+
+class UdpSocket:
+
+    def __init__(self):
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+    def listen(self, addr: str, port: int):
+        self.socket.bind((addr, port))
+
+    def receive(self):
+        data, addr = self.socket.recvfrom(4096)
+        data = data.decode('utf-8')
+        printd('udp get:', data)
+
+        def replyFunc(message: str):
+            self.socket.sendto(message.encode('utf-8'), addr)
+
+        return data, replyFunc
+
+    def send(self, addr: str, port: int, message: str):
+        printd('udp send:', message)
+        self.socket.sendto(message.encode('utf-8'), (addr, port))
+
+    def close(self):
+        self.socket.close()
 
 
 def hmmNow():
@@ -41,50 +121,59 @@ def hmmNow():
     return '%d:%02d' % (time.minute, time.second)
 
 
+class ThreadInterruptedError(Exception):
+    pass
+
 class ChatroomServer:
 
-    flag = True
-    msgQueue = Queue()
-    userList = []
     chatQueue = deque()
 
-    def __init__(self, port: int, owner: str):
+    def __init__(self, owner: str):
         self.owner = owner
+        self.msgQueue = Queue()
+        self.userList = []
 
-        self.ss = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.ss.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.ss.bind(('127.0.0.1', port))
-        self.ss.listen()
+        printd('new chatroom server', len(self.userList))
 
-        tProc = threading.Thread(target=self.procPlayground)
-        tProc.daemon = True
-        tProc.start()
+    def listen(self, addr: str, port: int):
+        self.flag = True
+        self.ss = TcpServerSocket()
+        self.ss.listen(addr, port)
 
-        t = threading.Thread(target=self.run)
+        t = Thread(target=self.procPlayground)
+        t.daemon = True
+        t.start()
+
+        t = Thread(target=self.listenForClient)
         t.daemon = True
         t.start()
 
     def broadcast(self, msg: str):
         for sc in self.userList:
-            tcpSendMessage(sc, msg)
+            try:
+                sc.writeLine(msg)
+            except Exception:
+                pass
 
     def procPlayground(self):
         while self.flag:
-            msg = self.msgQueue.get(True)
+            try:
+                msg = self.msgQueue.get(True, 0.1)
+            except Empty:
+                continue
+
             msg['time'] = hmmNow()
             if len(self.chatQueue) == 3:
                 self.chatQueue.popleft()
             self.chatQueue.append(msg)
             self.broadcast(json.dumps(msg))
 
-    def userPlayground(self, sc: socket.socket):
-        username = ''
-        try:
-            # Get username data
-            msg = tcpReceiveMessage(sc)
-            username = msg
-        except IOError as e:
-            pass
+        printd('chatroom queue thread exited.')
+
+    def userPlayground(self, sc: TcpSocket):
+        # Get username data
+        username = sc.readLine()
+        assert(len(username) > 0)
 
         try:
             # broadcast that new user joins
@@ -94,163 +183,269 @@ class ChatroomServer:
                 'time': hmmNow()
             }))
 
-            # show history message
+            # show history message to the new user
             for i in range(min(3, len(self.chatQueue))):
-                tcpSendMessage(sc, json.dumps(self.chatQueue[i]))
+                hist = self.chatQueue[i]
+                hist['history'] = True
+                sc.writeLine(json.dumps(hist))
 
             # add this user to socket list
             self.userList.append(sc)
 
+            # keep listen message from this user
             while self.flag:
-                msg = tcpReceiveMessage(sc)
+                msg = sc.readLine()
+                # print(msg, username)
+
+                # If this user leave and this user is owner,
+                # close the chatroom
                 if msg == '__EOF__' and username == self.owner:
-                    self.broadcast(msg)
+                    self.broadcast(json.dumps({
+                        'username': 'sys',
+                        'action': 'close',
+                        'time': hmmNow(),
+                        'message': 'the chatroom is close.'
+                    }))
                     self.close()
                     break
+
+                # Put message into message queue
                 self.msgQueue.put({'username': username, 'message': msg})
 
         except IOError as e:
-            pass
+            # traceback(e)
+            self.userList.remove(sc)
+            self.broadcast(json.dumps({
+                'username': 'sys',
+                'time': hmmNow(),
+                'message': '%s leave us' % username
+            }))
+            printd('a chatroom user thread exited.')
+            return
+        
+        assert(False)
 
-        self.userList.remove(sc)
-
-    def run(self):
-        try:
-            while self.flag:
-                sc, _ = self.ss.accept()
+    def listenForClient(self):
+        while self.flag:
+            try:
+                sc = self.ss.accept()
                 t = threading.Thread(target=self.userPlayground, args=(sc, ))
                 t.daemon = True
                 t.start()
-        except Exception as e:
-            self.close()
+            except IOError:
+                pass
+
+        printd('chatroom server main thread exited.')
 
     def close(self):
+        printd('preparing closing server: ', self.flag)
         if self.flag:
             self.flag = False
-            self.ss.shutdown(socket.SHUT_RDWR)
+            # close server socket
             self.ss.close()
+            # close all client sockets
+            printd('start iterating:', len(self.userList))
+            for sc in self.userList:
+                sc.close()
 
 
 class ChatroomClient:
 
-    flag = True
-    socket = None
-    owner = False
-    isAttach = True
-    chatQueue = deque()
-
-    def printchat(self, msg):
-        if self.isAttach:
-            chatstr = '%s[%s]: %s' % (
-                msg['username'], msg['time'], msg['message'])
-            print(chatstr)
-
-    def playground(self):
-        try:
-            while self.flag:
-                msg = tcpReceiveMessage(self.socket)
-                if msg == '__EOF__':
-                    if self.flag:
-                        self.printchat(
-                            'sys[%s]: the chatroom is close.' % (hmmNow()))
-                        self.close()
-                    break
-
-                msg = json.loads(msg)
-                if self.owner:
-                    if len(self.chatQueue) == 3:
-                        self.chatQueue.popleft()
-                    self.chatQueue.append(msg)
-                self.printchat(msg)
-
-        except IOError as e:
-            self.close()
-            pass
-
-    def __init__(self, addr: str, port: int, username: str, isOwner=False):
+    def __init__(self, username: str, isOwner):
+        self.username = username
+        self.flag = True
         self.owner = isOwner
+        self.isAttach = False
+        self.localChatQueue = deque()
 
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.socket.connect((addr, port))
-        t = threading.Thread(target=self.playground)
+    def connect(self, addr: str, port: int):
+        self.socket = TcpSocket(addr, port)
+
+        # a thread that keeps receiving message from server
+        t = Thread(target=self.recPlayground)
         t.daemon = True
         t.start()
 
+        # a thread that keeps sending empty message to server
+        #t = Thread(target=self.sndPlayground)
+        #t.daemon = True
+        #t.start()
+
         # send client username
-        tcpSendMessage(self.socket, username)
+        self.socket.writeLine(self.username)
+
+    def addToQueue(self, msg):
+        # add this message to history message queue
+        msg = '%s[%s]: %s' % (msg['username'], msg['time'], msg['message'])
+
+        if len(self.localChatQueue) == 3:
+            self.localChatQueue.popleft()
+        self.localChatQueue.append(msg)
+
+    def chat(self, msg):
+        # print to console if attached
+        msg = '%s[%s]: %s' % (msg['username'], msg['time'], msg['message'])
+        if self.isAttach:
+            print(msg)
+
+    def recPlayground(self):
+        try:
+            # keep listening from socket
+            while self.flag:
+                msg = self.socket.readLine()
+                msg = json.loads(msg)
+
+                # if it indicates that the room is closed, close the client
+                if msg['username'] == 'sys' \
+                        and 'action' in msg \
+                        and msg['action'] == 'close':
+                    self.chat(msg)
+                    self.close()
+                    break
+
+                # if this is system message just print it
+                if msg['username'] == 'sys':
+                    self.chat(msg)
+                # if this is my message, dont print it except history message
+                elif msg['username'] == self.username:
+                    self.addToQueue(msg)
+                    if 'history' in msg and msg['history']:
+                        self.chat(msg)
+                # if this is not my message, queue and print it
+                else:
+                    self.addToQueue(msg)
+                    self.chat(msg)
+
+        except IOError as e:
+            printd('close socket because read err')
+            self.close()
+            return
+        
+
+    def sndPlayground(self):
+        try:
+            while self.flag:
+                self.socket.writeLine('')
+                sleep(0.01)
+        except IOError:
+            pass
+        printd('send playground exited.')
 
     def showWelcome(self):
         print('*****************************')
         print('** Welcome to the chatroom **')
         print('*****************************')
 
-    def showHistoryChat(self):
-        for i in range(min(3, len(self.chatQueue))):
-            self.printchat(self.chatQueue[i])
+    def showHistoryChatOnLocal(self):
+        for i in range(min(3, len(self.localChatQueue))):
+            print(self.localChatQueue[i])
 
-    def attach(self):
+    def setHandler(self):
+        def handler(a, b):
+            raise ThreadInterruptedError()
+        signal.signal(signal.SIGINT, handler)
+    
+    def removeHandler(self):
+        def handler(a, b):
+                pass
+        signal.signal(signal.SIGINT, handler)
+
+    def attach(self, isnew: bool):
         self.isAttach = True
         self.showWelcome()
-        if self.owner:
-            self.showHistoryChat()
+        self.setHandler()
+
+        # If this is the owner, get history chat from local but server
+        if not isnew:
+            self.showHistoryChatOnLocal()
 
         try:
             while self.flag:
-                line = input().strip()
+                try:
+                    line = input()
+                except ThreadInterruptedError:
+                    return
+
                 if len(line) == 0:
                     continue
                 elif line == 'detach' and self.owner:
+                    self.removeHandler()
                     self.isAttach = False
                     return False
                 elif line.strip() == 'leave-chatroom':
+                    self.removeHandler()
                     if self.owner:
-                        tcpSendMessage(self.socket, '__EOF__')
+                        # tell server to shutdown
+                        self.socket.writeLine('__EOF__')
                     self.close()
                     return True
-                self.sendChat(line)
-        except IOError as e:
-            self.close()
-            return True
+            
+                self.socket.writeLine(line)
 
-    def sendChat(self, line: str):
-        tcpSendMessage(self.socket, line)
+        except IOError as e:
+            self.removeHandler()
+            self.close()
+            return line
+        
+        self.removeHandler()
+        return None
 
     def close(self):
         if self.flag:
             self.flag = False
-            self.socket.shutdown(socket.SHUT_RDWR)
-            self.socket.close()
+
+            try:
+                self.socket.close()
+            except IOError:
+                pass
+            
+            def interrupted(signum, frame):
+                raise IOError()
+            signal.pthread_kill(threading.main_thread().ident, signal.SIGINT)
 
 
 class Client:
 
-    chatroomServer = None
-    chatroomClient = None
+    def __init__(self, addr: str, port: int):
+        self.secret = -1
+        self.chatroomServer = None
+        self.chatroomClient = None
+        self.serverAddr = addr
+        self.serverPort = port
 
     def createChatroom(self, port: int, username: str):
         assert(not self.chatroomServer)
         assert(not self.chatroomClient)
         print('Start to create chatroom...')
 
-        self.chatroomServer = ChatroomServer(port, username)
-        self.chatroomClient = ChatroomClient('127.0.0.1', port, username, True)
-        self.attachChatroom()
+        self.chatroomServer = ChatroomServer(username)
+        self.chatroomServer.listen('127.0.0.1', port)
+
+        self.chatroomClient = ChatroomClient(username, True)
+        self.chatroomClient.connect('127.0.0.1', port)
+        self.attachChatroom(True)
 
     def joinChatroom(self, addr: str, port: int, username: str):
-        assert(not self.chatroomClient)
-
-        self.chatroomClient = ChatroomClient(addr, port, username)
-        self.chatroomClient.attach()
-        self.chatroomClient = None
+        cc = ChatroomClient(username, False)
+        cc.connect(addr, port)
+        lastCommand = cc.attach(True)
         print('Welcome back to BBS.')
+        #print('last command is of type', (type(lastCommand)))
+        #if type(lastCommand) == str:
+        #    sys.stdout.write('\033[2K> %s\n' % lastCommand)
+        #    self.execute(lastCommand)
 
-    def attachChatroom(self):
+    def attachChatroom(self, isNew: bool):
+        assert(self.chatroomServer)
         assert(self.chatroomClient)
-        foul = self.chatroomClient.attach()
-        if foul:
+
+        isSeverClose = self.chatroomClient.attach(isNew)
+
+        if isSeverClose:
             self.chatroomServer = None
             self.chatroomClient = None
             self.tcpSendRequest('close-chatroom')
+
         print('Welcome back to BBS.')
 
     def trivialTcp(self, line: str):
@@ -258,13 +453,20 @@ class Client:
         return res['message']
 
     def exit(self):
+        # if chatroom server is not closed,
+        # tell that server will be shutdown
         if self.chatroomServer is not None:
             self.tcpSendRequest('close-chatroom')
+
+        # tell that server I log out
         self.tcpSendRequest('logout')
+
+        # close socket
         self.tcpSocket.close()
+
         exit()
 
-    def consume(self, line: str):
+    def execute(self, line: str):
         line = line.strip()
         if len(line) == 0:
             return
@@ -288,47 +490,56 @@ class Client:
         elif command == 'join-chatroom':
             self.joinChatroom(res['addr'], res['port'], res['username'])
         elif command == 'attach':
-            self.attachChatroom()
-        else:
+            self.attachChatroom(False)
+        elif command == 'login':
+            self.secret = res['secret']
+        elif command == 'logout':
+            self.secret = -1
+
+        if 'message' in res and len(res['message']) > 0:
             print(res['message'])
 
     def tcpSendRequest(self, message: str):
-        tcpSendMessage(self.tcpSocket, message)
-        msg = tcpReceiveMessage(self.tcpSocket)
-        return json.loads(msg)
+        self.tcpSocket.writeLine(json.dumps({
+            'message': message,
+            'secret': self.secret
+        }))
+        reply = self.tcpSocket.readLine()
+        return json.loads(reply)
 
     def udpSendRequest(self, message: str):
-        try:
-            msg = udpReuqest(self.serverAddr, self.serverPort, message)
-            return json.loads(msg)
-        except Exception as e:
-            print(e)
-            raise e
-        
+        udpSocket = UdpSocket()
+        udpSocket.send(self.serverAddr, self.serverPort, json.dumps({
+            'message': message,
+            'secret': self.secret
+        }))
+        reply, _ = udpSocket.receive()
+        return json.loads(reply)
 
     def run(self):
-        self.tcpSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.tcpSocket.connect((self.serverAddr, self.serverPort))
+        self.tcpSocket = TcpSocket(self.serverAddr, self.serverPort)
+
         print('********************************')
         print('** Welcome to the BBS server. **')
         print('********************************')
+
         try:
             while True:
                 line = input('% ')
-                self.consume(line)
+                self.execute(line)
         except IOError as e:
-            if self.tcpSocket:
-                self.tcpSocket.close()
-
-    def __init__(self, addr: str, port: int):
-        self.serverAddr = addr
-        self.serverPort = port
+            # traceback(e)
+            self.tcpSocket.close()
 
 
 def main():
-    if len(sys.argv) != 3:
+    global dev
+
+    if len(sys.argv) < 3:
         print('Usage: client <address> <port>')
         exit(-1)
+    if len(sys.argv) >= 4 and sys.argv[3] == '--dev':
+        dev = True
 
     addr = sys.argv[1]
     port = int(sys.argv[2])

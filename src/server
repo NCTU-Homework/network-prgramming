@@ -1,25 +1,110 @@
 #!/usr/bin/python3
 
-import socket
 import sys
-import threading
+import socket
 import json
+from threading import Thread, Lock
+from random import randrange as rand
 from datetime import date
-from typing import Tuple, List, Optional
+from typing import List, Tuple, Optional
+
+dev = False
 
 
-def udpSendMessage(addr: str, port: int, message: str):
-    udpSocket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    udpSocket.sendto(message.encode('utf-8'), (addr, port))
-    udpSocket.close()
+def printd(*args):
+    if dev:
+        print('[Debug]', args)
 
 
-def udpReceiveMessage(addr: str, port: int):
-    udpSocket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    udpSocket.bind((addr, port))
-    data, addr = udpSocket.recvfrom(BUF_SIZE)
-    udpSocket.close()
-    return data, addr
+class TcpSocket:
+
+    def __init__(self, first, second=None):
+        if not second:
+            # first = socket
+            self.socket = first
+        else:
+            # first = ip, second = port
+            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.socket.connect((first, second))
+
+        self.stream = self.socket.makefile('rw')
+
+    def writeLine(self, message: str):
+        printd('tcp send:', message)
+        self.stream.write(message + '\n')
+        self.stream.flush()
+
+    def readLine(self) -> str:
+        while True:
+            line = self.stream.readline()
+            if not line:
+                raise IOError
+            if len(line) <= 1:
+                continue
+            line = line[:-1]
+            printd('tcp get:', line)
+            return line
+
+    def getSock(self):
+        return self.socket.getsockname()
+
+    def getPeer(self):
+        return self.socket.getpeername()
+
+    def close(self):
+        self.stream.close()
+        self.socket.close()
+
+
+class TcpServerSocket:
+
+    def __init__(self):
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+    def listen(self, addr: str, port: int):
+        self.socket.bind((addr, port))
+        self.socket.listen()
+
+    def accept(self) -> TcpSocket:
+        return TcpSocket(self.socket.accept()[0])
+
+    def getSock(self):
+        return self.socket.getsockname()
+
+    def close(self):
+        self.socket.close()
+
+
+class UdpSocket:
+
+    def __init__(self):
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+    def listen(self, addr: str, port: int):
+        self.socket.bind((addr, port))
+
+    def receive(self):
+        data, addr = self.socket.recvfrom(4096)
+        data = data.decode('utf-8')
+        printd('udp get:', data)
+
+        def replyFunc(message: str):
+            printd('udp send:', message)
+            message = message.encode('utf-8')
+            self.socket.sendto(message, addr)
+
+        return data, replyFunc
+
+    def send(self, addr: str, port: int, message: str):
+        printd('udp send:', message)
+        message = message.encode('utf-8')
+        self.socket.sendto(message, (addr, port))
+
+    def close(self):
+        self.socket.close()
 
 
 class BadCommandError(Exception):
@@ -29,7 +114,7 @@ class BadCommandError(Exception):
 
 BUF_SIZE = 4096
 postId = 0
-postIdLock = threading.Lock()
+postIdLock = Lock()
 
 
 def nextPostId():
@@ -80,16 +165,8 @@ def validateTokens(usage: Tuple[str], reqInt: Tuple[int] = ()):
     return wrapper
 
 
-userList = {
-    'a': {
-        'passwd': 'a',
-        'email': 'a'
-    },
-    'b': {
-        'passwd': 'b',
-        'email': 'b'
-    }
-}
+clientList = {}
+userList = {}
 boardList = {}
 postList = {}
 chatroomList = {}
@@ -101,7 +178,7 @@ class Client:
 
     def requireUserLoggedIn(self):
         if not self.username:
-            raise BadCommandError('Please login first')
+            raise BadCommandError('Please login first.')
 
     @validateTokens(('port', ), (1,))
     def createChatroom(self, tokens):
@@ -113,7 +190,7 @@ class Client:
         port = int(tokens[1])
         chatroomList[self.username] = {
             'port': port,
-            'addr': self.tcpSocket.getpeername()[0],
+            'addr': self.tcpSocket.getPeer()[0],
             'open': True
         }
         return {
@@ -283,7 +360,13 @@ class Client:
             return bad('Login failed.')
 
         self.username = u
-        return ok('Welcome, %s.' % u)
+        self.secret = rand(1 << 31)
+        clientList[self.secret] = self
+        return {
+            'status': 200,
+            'message': 'Welcome, %s.' % (u, ),
+            'secret': self.secret
+        }
 
     @validateTokens(())
     def listUser(self, tokens):
@@ -301,8 +384,13 @@ class Client:
             return bad('Please do "attach" and "leave-chatroom" first.')
 
         u = self.username
+        s = self.secret
         self.username = None
-        del chatroomList[u]
+        self.secret = None
+        if u in chatroomList:
+            del chatroomList[u]
+        if s in clientList:
+            del clientList[s]
 
         return ok('Bye, %s.' % u)
 
@@ -432,67 +520,84 @@ class Client:
     def unknown(self, tokens):
         return bad('Unknown command: `%s`.' % (tokens[0]))
 
+    def notifyUdpMessage(self, message: str, replier):
+
+        ret = self.consume(message)
+        if ret:
+            replier(json.dumps(ret))
+
     def tcpPlayground(self):
         try:
             while True:
-                data = self.tcpSocket.recv(BUF_SIZE)
-                if not data:
-                    return
-
-                data = data.decode('utf-8')
-                reply = self.consume(data)
+                req = self.tcpSocket.readLine()
+                req = json.loads(req)
+                reply = self.consume(req['message'])
                 if reply:
                     reply = json.dumps(reply)
-                    #print('TCP: `%s`' % reply)
-                    self.tcpSocket.send(reply.encode('utf-8'))
-        except:
-            pass
+                    self.tcpSocket.writeLine(reply)
+        except IOError:
+            self.tcpSocket.close()
 
-    def udpPlayground(self):
-        addr = self.tcpSocket.getsockname()[0]
-        port = self.tcpSocket.getsockname()[1]
-        while True:
-            data, clAddr = udpReceiveMessage(addr, port)
-            if not data:
-                return
-            data = data.decode('utf-8')
-            reply = self.consume(data)
-            if reply:
-                reply = json.dumps(reply)
-                #print('UDP: `%s`' % reply)
-                udpSendMessage(clAddr[0], clAddr[1], reply)
+        print('A client is closed')
 
-    def __init__(self, sc: socket.socket):
-        print('New Connection.')
+    def __init__(self, sc: TcpSocket):
         self.tcpSocket = sc
 
 
 def runTcpServer(port: int):
 
-    ss = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    ss.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    ss.bind(('127.0.0.1', port))
-    ss.listen()
+    tcpServer = TcpServerSocket()
+    tcpServer.listen('127.0.0.1', port)
 
     while True:
-        sc, _ = ss.accept()
+        sc = tcpServer.accept()
+        print('New Connection.')
+
         client = Client(sc)
 
-        t = threading.Thread(target=client.tcpPlayground)
+        t = Thread(target=client.tcpPlayground)
         t.daemon = True
         t.start()
 
-        u = threading.Thread(target=client.udpPlayground)
-        u.daemon = True
-        u.start()
+    print('Tcp server is shutdown.')
+
+
+def runUdpServer(port: int):
+    udpServer = UdpSocket()
+    udpServer.listen('127.0.0.1', port)
+    while True:
+        data, rep = udpServer.receive()
+        try:
+            data = json.loads(data)
+            if data['secret'] in clientList:
+                clientList[data['secret']].notifyUdpMessage(data['message'], rep)
+            else:
+                rep(json.dumps(bad('Please login first.')))
+        except ValueError:
+            # Invalid format message, may be an attack
+            pass
+
+    print('Udp server is shutdown.')
 
 
 def main():
-    if len(sys.argv) != 2:
+    global dev
+
+    if len(sys.argv) < 2:
         print('Usage: ./server <port>')
         exit(1)
+    if len(sys.argv) >= 3 and sys.argv[2] == '--dev':
+        dev = True
+        userList['a'] = {'passwd': 'a', 'email': 'a'}
+        userList['b'] = {'passwd': 'b', 'email': 'b'}
+        userList['c'] = {'passwd': 'c', 'email': 'c'}
 
     port = int(sys.argv[1])
+
+    udpThread = Thread(target=runUdpServer, args=(port,))
+    udpThread.daemon = True
+    udpThread.start()
+
     runTcpServer(port)
 
 
