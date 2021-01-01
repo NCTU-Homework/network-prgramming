@@ -538,7 +538,7 @@ class Client:
         except IOError:
             self.tcpSocket.close()
 
-        print('A client is closed')
+        #print('A client is closed')
 
     def __init__(self, sc: TcpSocket):
         self.tcpSocket = sc
